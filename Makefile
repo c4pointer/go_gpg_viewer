@@ -86,9 +86,25 @@ clean: ## Clean build artifacts
 	@go clean
 	@echo "Clean complete!"
 
-test: ## Run tests
+test:
 	@echo "Running tests..."
-	go test -v ./...
+	go test ./...
+
+test-verbose:
+	@echo "Running tests with verbose output..."
+	go test ./... -v
+
+test-coverage:
+	@echo "Running tests with coverage..."
+	go test ./... -cover
+	@echo "Generating coverage report..."
+	go test ./... -coverprofile=coverage.out
+	go tool cover -html=coverage.out -o coverage.html
+	@echo "Coverage report generated: coverage.html"
+
+test-benchmark:
+	@echo "Running benchmarks..."
+	go test ./... -bench=. -benchmem
 
 lint: ## Run linter
 	@echo "Running linter..."
