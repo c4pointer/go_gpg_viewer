@@ -17,7 +17,7 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
-	scanpassstore "main.go/scan_pass_store" // Adjust the import path according to your project structure
+	scanpassstore "main.go/scanpassstore" // Adjust the import path according to your project structure
 	"main.go/settings"
 )
 
