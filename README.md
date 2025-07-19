@@ -102,8 +102,8 @@ If you prefer using Make:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/gpg_viewer.git
-cd gpg_viewer
+git clone https://github.com/c4pointer/go_gpg_viewer.git
+cd go_gpg_viewer
 
 # Install for current user (recommended)
 make install-user
@@ -124,8 +124,8 @@ For advanced users who want full control:
 
 1. **Clone and build**
    ```bash
-   git clone https://github.com/yourusername/gpg_viewer.git
-   cd gpg_viewer
+   git clone https://github.com/c4pointer/go_gpg_viewer.git
+   cd go_gpg_viewer
    go build -o gpg_viewer
    chmod +x gpg_viewer
    ```
@@ -197,7 +197,7 @@ rm -f ~/.local/share/applications/gpg-viewer.desktop
 update-desktop-database ~/.local/share/applications
 
 # Remove configuration (optional)
-rm -rf ~/.config/gpg_viewer
+rm -rf ~/.config/go_gpg_viewer
 ```
 
 #### System-wide Installation Cleanup
@@ -228,10 +228,10 @@ sudo update-desktop-database
 update-desktop-database ~/.local/share/applications
 
 # Remove configuration files (optional)
-rm -rf ~/.config/gpg_viewer
+rm -rf ~/.config/go_gpg_viewer
 
 # Remove build artifacts from source directory
-cd /path/to/gpg_viewer/source
+cd /path/to/go_gpg_viewer/source
 make clean
 # or manually:
 rm -f gpg_viewer
@@ -292,7 +292,7 @@ If the commands above return "not found" or similar errors, the uninstallation w
 
 ### Application Settings
 
-The application automatically creates a configuration file at `~/.config/gpg_viewer/config.json` on first run. You can manually configure:
+The application automatically creates a configuration file at `~/.config/go_gpg_viewer/config.json` on first run. You can manually configure:
 
 ```json
 {
@@ -479,7 +479,7 @@ make quick-install
 ### Project Structure
 
 ```
-gpg_viewer/
+go_gpg_viewer/
 ├── main.go                 # Main application entry point
 ├── go.mod                  # Go module definition
 ├── go.sum                  # Go module checksums
@@ -487,12 +487,15 @@ gpg_viewer/
 ├── install.sh              # Smart installation script
 ├── LICENSE                 # MIT License
 ├── README.md               # This documentation
-├── scan_pass_store/        # Password store scanning logic
+├── scanpassstore/          # Password store scanning logic
 │   └── scan.go
-└── settings/               # Application settings
-    ├── dialog.go          # Settings dialog UI
-    ├── settings.go        # Settings management
-    └── theme.go           # Theme handling
+├── settings/               # Application settings
+│   ├── dialog.go          # Settings dialog UI
+│   ├── settings.go        # Settings management
+│   └── theme.go           # Theme handling
+└── assets/                 # Application assets
+    ├── assets.go          # Embedded resources
+    └── icon.svg           # Application icon
 ```
 
 ### Contributing
@@ -515,8 +518,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/gpg_viewer/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/gpg_viewer/discussions)
+- **Issues**: [GitHub Issues](https://github.com/c4pointer/go_gpg_viewer/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/c4pointer/go_gpg_viewer/discussions)
 - **Email**: c4point@gmail.com
 
 ---
