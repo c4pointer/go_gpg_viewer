@@ -21,7 +21,7 @@ A modern, cross-platform GUI application for browsing and managing password-stor
 
 ```bash
 # Clone and install in one command
-git clone https://github.com/yourusername/gpg_viewer.git && cd gpg_viewer && ./install.sh
+git clone  git@github.com:c4pointer/go_gpg_viewer.git && cd go_gpg_viewer && ./install.sh
 
 # Run the application
 gpg_viewer
