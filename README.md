@@ -25,6 +25,11 @@ git clone  git@github.com:c4pointer/go_gpg_viewer.git && cd go_gpg_viewer && ./i
 
 # Run the application
 gpg_viewer
+
+# To uninstall later
+make uninstall-user  # for user installation
+# or
+make uninstall       # for system-wide installation
 ```
 
 ## Screenshots
@@ -68,8 +73,8 @@ The easiest way to install GPG Password Store Viewer:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/gpg_viewer.git
-cd gpg_viewer
+git clone https://github.com/c4pointer/go_gpg_viewer.git
+cd go_gpg_viewer
 
 # Install for current user (recommended)
 ./install.sh
@@ -146,6 +151,111 @@ For advanced users who want full control:
    Keywords=password;gpg;security;
    EOF
    ```
+
+## Uninstallation
+
+### Method 1: Using Make (Recommended)
+
+If you installed using Make, use the corresponding uninstall command:
+
+```bash
+# For user installation
+make uninstall-user
+
+# For system-wide installation
+make uninstall
+```
+
+### Method 2: Using Installation Script
+
+The installation script doesn't have a built-in uninstall option, but you can manually remove the files:
+
+```bash
+# For user installation
+rm -f ~/.local/bin/gpg_viewer
+rm -f ~/.local/share/applications/gpg-viewer.desktop
+update-desktop-database ~/.local/share/applications
+
+# For system-wide installation
+sudo rm -f /usr/local/bin/gpg_viewer
+sudo rm -f /usr/share/applications/gpg-viewer.desktop
+```
+
+### Method 3: Manual Uninstallation
+
+If you installed manually or need to clean up completely:
+
+#### User Installation Cleanup
+```bash
+# Remove binary
+rm -f ~/.local/bin/gpg_viewer
+
+# Remove desktop shortcut
+rm -f ~/.local/share/applications/gpg-viewer.desktop
+
+# Update desktop database
+update-desktop-database ~/.local/share/applications
+
+# Remove configuration (optional)
+rm -rf ~/.config/gpg_viewer
+```
+
+#### System-wide Installation Cleanup
+```bash
+# Remove binary
+sudo rm -f /usr/local/bin/gpg_viewer
+
+# Remove desktop shortcut
+sudo rm -f /usr/share/applications/gpg-viewer.desktop
+
+# Update desktop database
+sudo update-desktop-database
+```
+
+#### Complete Cleanup (All Methods)
+```bash
+# Remove all possible installation locations
+sudo rm -f /usr/local/bin/gpg_viewer
+sudo rm -f /usr/bin/gpg_viewer
+rm -f ~/.local/bin/gpg_viewer
+
+# Remove desktop shortcuts
+sudo rm -f /usr/share/applications/gpg-viewer.desktop
+rm -f ~/.local/share/applications/gpg-viewer.desktop
+
+# Update desktop databases
+sudo update-desktop-database
+update-desktop-database ~/.local/share/applications
+
+# Remove configuration files (optional)
+rm -rf ~/.config/gpg_viewer
+
+# Remove build artifacts from source directory
+cd /path/to/gpg_viewer/source
+make clean
+# or manually:
+rm -f gpg_viewer
+rm -rf build/
+go clean
+```
+
+### Verification
+
+After uninstallation, verify that the application has been removed:
+
+```bash
+# Check if binary exists
+which gpg_viewer
+
+# Check if desktop shortcut exists
+ls ~/.local/share/applications/gpg-viewer.desktop
+ls /usr/share/applications/gpg-viewer.desktop
+
+# Try to run the application
+gpg_viewer
+```
+
+If the commands above return "not found" or similar errors, the uninstallation was successful.
 
 ## Configuration
 

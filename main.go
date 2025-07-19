@@ -17,6 +17,7 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+	"main.go/assets"
 	scanpassstore "main.go/scanpassstore" // Adjust the import path according to your project structure
 	"main.go/settings"
 )
@@ -114,7 +115,7 @@ func decryptAndEditFile(filePath string, window fyne.Window) {
 		// Create buttons first
 		var editDialog *dialog.CustomDialog
 
-		saveBtn := widget.NewButton("Save Changes", func() {
+		saveBtn := widget.NewButtonWithIcon("Save Changes", theme.DocumentSaveIcon(), func() {
 			// Get the edited content
 			editedContent := contentEntry.Text
 
@@ -223,7 +224,7 @@ func decryptAndEditFile(filePath string, window fyne.Window) {
 			}
 		})
 
-		closeBtn := widget.NewButton("Close", func() {
+		closeBtn := widget.NewButtonWithIcon("Close", theme.CancelIcon(), func() {
 			if editDialog != nil {
 				editDialog.Hide()
 			}
@@ -291,6 +292,9 @@ func main() {
 
 	// Initialize GUI
 	myApp := app.New()
+	
+	// Set application icon
+	myApp.SetIcon(assets.GetAppIcon())
 
 	// Apply theme from settings
 	settings.ApplyTheme(myApp, appSettings.Theme)
