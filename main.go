@@ -27,7 +27,12 @@ import (
 // Structure to hold application state
 type AppState struct {
 	SelectedDirectory string
+	SearchActive      bool
+	SearchResults     []string // relative paths without .gpg, e.g., "Finance/bank"
 }
+
+// defaultRecipient is populated from settings and used to prefill recipient dialogs
+var defaultRecipient string
 
 // decryptAndEditFile handles the decryption and editing of a GPG file
 func decryptAndEditFile(filePath string, window fyne.Window) {
@@ -164,6 +169,11 @@ func decryptAndEditFile(filePath string, window fyne.Window) {
 			if recipient == "" {
 				// If we couldn't find the recipient, ask the user
 				recipientEntry := widget.NewEntry()
+				if defaultRecipient != "" {
+					recipientEntry.SetText(defaultRecipient)
+				} else {
+					recipientEntry.SetPlaceHolder("email or key ID")
+				}
 				recipientDialog := dialog.NewCustomConfirm(
 					"Enter Recipient",
 					"Encrypt",
@@ -292,12 +302,14 @@ func main() {
 
 	// Initialize GUI
 	myApp := app.New()
-	
+
 	// Set application icon
 	myApp.SetIcon(assets.GetAppIcon())
 
 	// Apply theme from settings
 	settings.ApplyTheme(myApp, appSettings.Theme)
+	// Prefill default recipient for encryption dialogs
+	defaultRecipient = appSettings.DefaultRecipient
 
 	myWindow := myApp.NewWindow("GPG Password Store Viewer")
 	myWindow.Resize(fyne.NewSize(float32(appSettings.WindowWidth), float32(appSettings.WindowHeight)))
@@ -515,7 +527,7 @@ func main() {
 	contentLabel := widget.NewLabel("Select an item to view details")
 	contentLabel.Wrapping = fyne.TextWrapWord
 
-	// File list for selected directory
+	// File list for selected directory or search results
 	fileList := widget.NewList(
 		func() int { return 0 },
 		func() fyne.CanvasObject {
@@ -525,6 +537,59 @@ func main() {
 			// This will be populated when a directory is selected
 		},
 	)
+
+	// Search entry (global search across store)
+	searchEntry := widget.NewEntry()
+	searchEntry.SetPlaceHolder("Search passwords… (name or path)")
+	searchEntry.OnChanged = func(query string) {
+		q := strings.TrimSpace(strings.ToLower(query))
+		if q == "" {
+			// Exit search mode and restore selection-driven list
+			appState.SearchActive = false
+			appState.SearchResults = nil
+			// Repopulate list from current selection
+			if appState.SelectedDirectory != "" {
+				tree.OnSelected(appState.SelectedDirectory)
+			} else {
+				fileList.Length = func() int { return 0 }
+				fileList.Refresh()
+				contentLabel.SetText("Select a directory or file to view details")
+			}
+			return
+		}
+
+		// Build list of all relative paths from store
+		// Use AllPaths to traverse; compute relative path and trim .gpg
+		var allRel []string
+		sep := string(os.PathSeparator)
+		prefix := targetPath + sep
+		for _, full := range store.AllPaths {
+			rel := strings.TrimPrefix(full, prefix)
+			if strings.HasSuffix(rel, ".gpg") {
+				rel = strings.TrimSuffix(rel, ".gpg")
+			}
+			allRel = append(allRel, rel)
+		}
+
+		// Filter
+		var results []string
+		for _, rel := range allRel {
+			if strings.Contains(strings.ToLower(rel), q) {
+				results = append(results, rel)
+			}
+		}
+
+		// Update state and list
+		appState.SearchActive = true
+		appState.SearchResults = results
+		fileList.Length = func() int { return len(appState.SearchResults) }
+		fileList.UpdateItem = func(id widget.ListItemID, o fyne.CanvasObject) {
+			label := o.(*widget.Label)
+			label.SetText(appState.SearchResults[id])
+		}
+		fileList.Refresh()
+		contentLabel.SetText(fmt.Sprintf("Found %d matching entr(y/ies)", len(results)))
+	}
 
 	// Handle tree selection
 	tree.OnSelected = func(id widget.TreeNodeID) {
@@ -636,6 +701,18 @@ func main() {
 
 	// Handle file selection
 	fileList.OnSelected = func(id widget.ListItemID) {
+		// If search is active, resolve selection directly by relative path
+		if appState.SearchActive {
+			if id < 0 || id >= len(appState.SearchResults) {
+				return
+			}
+			rel := appState.SearchResults[id]
+			// Build full path and open
+			filePath := filepath.Join(targetPath, rel+".gpg")
+			go decryptAndEditFile(filePath, myWindow)
+			return
+		}
+
 		selectedDir := appState.SelectedDirectory
 		var fileName string
 		var filePath string
@@ -790,6 +867,11 @@ func main() {
 						if recipient == "" {
 							// If we couldn't find the recipient, ask the user
 							recipientEntry := widget.NewEntry()
+							if defaultRecipient != "" {
+								recipientEntry.SetText(defaultRecipient)
+							} else {
+								recipientEntry.SetPlaceHolder("email or key ID")
+							}
 							recipientDialog := dialog.NewCustomConfirm(
 								"Enter Recipient",
 								"Encrypt",
@@ -1140,9 +1222,15 @@ func main() {
 		}),
 	)
 
-	// Main container with toolbar and split view
-	mainContainer := container.NewBorder(
+	// Top area: toolbar + search
+	topContainer := container.NewVBox(
 		toolbar,
+		container.NewBorder(nil, nil, nil, nil, searchEntry),
+	)
+
+	// Main container with toolbar/search and split view
+	mainContainer := container.NewBorder(
+		topContainer,
 		nil, nil, nil,
 		split,
 	)
