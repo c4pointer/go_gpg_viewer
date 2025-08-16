@@ -109,7 +109,7 @@ cd go_gpg_viewer
 make install-user
 
 # Install system-wide (requires sudo)
-make install
+/
 
 # Just build the application
 make build
