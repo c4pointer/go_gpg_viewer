@@ -252,6 +252,171 @@ func decryptAndEditFile(filePath string, window fyne.Window) {
 	decryptAndEdit(filePath, "")
 }
 
+// showNewRecordDialog displays a dialog for creating a new password record
+func showNewRecordDialog(window fyne.Window, targetPath string, defaultRecipient string, refreshCallback func()) {
+	// Create form entries
+	nameEntry := widget.NewEntry()
+	nameEntry.SetPlaceHolder("Enter record name (e.g., gmail.com, bank/chase)")
+	
+	usernameEntry := widget.NewEntry()
+	usernameEntry.SetPlaceHolder("Enter username/email")
+	
+	passwordEntry := widget.NewPasswordEntry()
+	passwordEntry.SetPlaceHolder("Enter password")
+	
+	notesEntry := widget.NewMultiLineEntry()
+	notesEntry.SetPlaceHolder("Additional notes (optional)")
+	notesEntry.Resize(fyne.NewSize(400, 100))
+	
+	recipientEntry := widget.NewEntry()
+	if defaultRecipient != "" {
+		recipientEntry.SetText(defaultRecipient)
+	} else {
+		recipientEntry.SetPlaceHolder("GPG recipient (email or key ID)")
+	}
+	
+	// Create form content
+	formContent := container.NewVBox(
+		widget.NewLabel("Create New Password Record"),
+		widget.NewSeparator(),
+		
+		widget.NewLabel("Record Name:"),
+		nameEntry,
+		
+		widget.NewLabel("Username:"),
+		usernameEntry,
+		
+		widget.NewLabel("Password:"),
+		passwordEntry,
+		
+		widget.NewLabel("Notes:"),
+		notesEntry,
+		
+		widget.NewLabel("GPG Recipient:"),
+		recipientEntry,
+	)
+	
+	// Create dialog
+	newRecordDialog := dialog.NewCustomConfirm(
+		"New Password Record",
+		"Create",
+		"Cancel",
+		formContent,
+		func(create bool) {
+			if !create {
+				return
+			}
+			
+			// Validate inputs
+			recordName := strings.TrimSpace(nameEntry.Text)
+			username := strings.TrimSpace(usernameEntry.Text)
+			password := strings.TrimSpace(passwordEntry.Text)
+			notes := strings.TrimSpace(notesEntry.Text)
+			recipient := strings.TrimSpace(recipientEntry.Text)
+			
+			if recordName == "" {
+				dialog.ShowError(errors.New("Record name cannot be empty"), window)
+				return
+			}
+			
+			if username == "" {
+				dialog.ShowError(errors.New("Username cannot be empty"), window)
+				return
+			}
+			
+			if password == "" {
+				dialog.ShowError(errors.New("Password cannot be empty"), window)
+				return
+			}
+			
+			if recipient == "" {
+				dialog.ShowError(errors.New("GPG recipient cannot be empty"), window)
+				return
+			}
+			
+			// Create password content
+			var content strings.Builder
+			content.WriteString(password)
+			content.WriteString("\n")
+			content.WriteString("Username: " + username)
+			if notes != "" {
+				content.WriteString("\n")
+				content.WriteString("Notes: " + notes)
+			}
+			
+			// Create the GPG file
+			go func() {
+				err := createNewPasswordFile(targetPath, recordName, content.String(), recipient)
+				if err != nil {
+					fyne.Do(func() {
+						dialog.ShowError(fmt.Errorf("Failed to create password file: %v", err), window)
+					})
+					return
+				}
+				
+				// Success - refresh the UI
+				fyne.Do(func() {
+					dialog.ShowInformation("Success", fmt.Sprintf("Password record '%s' created successfully", recordName), window)
+					if refreshCallback != nil {
+						refreshCallback()
+					}
+				})
+			}()
+		},
+		window,
+	)
+	
+	newRecordDialog.Resize(fyne.NewSize(500, 600))
+	newRecordDialog.Show()
+}
+
+// createNewPasswordFile creates a new GPG-encrypted password file
+func createNewPasswordFile(targetPath, recordName, content, recipient string) error {
+	// Determine the file path
+	var filePath string
+	if strings.Contains(recordName, "/") {
+		// Create directory structure if needed
+		dirPath := filepath.Join(targetPath, filepath.Dir(recordName))
+		if err := os.MkdirAll(dirPath, 0755); err != nil {
+			return fmt.Errorf("failed to create directory structure: %v", err)
+		}
+		filePath = filepath.Join(targetPath, recordName+".gpg")
+	} else {
+		filePath = filepath.Join(targetPath, recordName+".gpg")
+	}
+	
+	// Check if file already exists
+	if _, err := os.Stat(filePath); err == nil {
+		return fmt.Errorf("password file '%s' already exists", recordName)
+	}
+	
+	// Create a temporary file for the content
+	tmpFile, err := ioutil.TempFile("", "gpg_new_*")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary file: %v", err)
+	}
+	tmpFileName := tmpFile.Name()
+	defer os.Remove(tmpFileName)
+	
+	// Write content to temporary file
+	if _, err := tmpFile.WriteString(content); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("failed to write to temporary file: %v", err)
+	}
+	tmpFile.Close()
+	
+	// Encrypt the file using GPG
+	cmd := exec.Command("gpg", "--batch", "--yes", "--recipient", recipient,
+		"--output", filePath, "--encrypt", tmpFileName)
+	
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to encrypt file: %v\n%s", err, output)
+	}
+	
+	return nil
+}
+
 func main() {
 	startTime := time.Now()
 	defer func() {
@@ -988,6 +1153,21 @@ func main() {
 			tree.Refresh()
 			fileList.Refresh()
 			contentLabel.SetText("Password store refreshed")
+		}),
+		widget.NewToolbarSeparator(),
+		widget.NewToolbarAction(theme.ContentAddIcon(), func() {
+			// Show new record creation dialog
+			showNewRecordDialog(myWindow, targetPath, defaultRecipient, func() {
+				// Refresh callback after creating new record
+				store, err = scanpassstore.ScanPasswordStore(targetPath)
+				if err != nil {
+					dialog.ShowError(err, myWindow)
+					return
+				}
+				tree.Refresh()
+				fileList.Refresh()
+				contentLabel.SetText("Password store refreshed")
+			})
 		}),
 		widget.NewToolbarSeparator(),
 		widget.NewToolbarAction(theme.DocumentSaveIcon(), func() {
