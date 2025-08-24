@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"main.go/scanpassstore"
-	"main.go/settings"
+	"go_gpg_viewer/scanpassstore"
+	"go_gpg_viewer/settings"
 )
 
 func TestDecryptCommandConstruction(t *testing.T) {

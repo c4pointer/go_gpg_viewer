@@ -17,9 +17,9 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
-	"main.go/assets"
-	scanpassstore "main.go/scanpassstore" // Adjust the import path according to your project structure
-	"main.go/settings"
+	"go_gpg_viewer/assets"
+	scanpassstore "go_gpg_viewer/scanpassstore" // Adjust the import path according to your project structure
+	"go_gpg_viewer/settings"
 )
 
 // Structure to hold password store data
