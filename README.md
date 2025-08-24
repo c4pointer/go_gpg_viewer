@@ -112,7 +112,7 @@ make install-user
 /
 
 # Just build the application
-make buildmake 
+make build 
 
 # Show all available commands
 make help
