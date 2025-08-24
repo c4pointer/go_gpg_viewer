@@ -1,8 +1,6 @@
 module go_gpg_viewer
 
-go 1.23.0
-
-toolchain go1.24.4
+go 1.24
 
 require (
 	fyne.io/fyne/v2 v2.6.1
