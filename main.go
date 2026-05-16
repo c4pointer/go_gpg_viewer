@@ -98,24 +98,10 @@ func decryptAndEditFile(filePath string, window fyne.Window) {
 		var editDialog *dialog.CustomDialog
 
 		saveBtn := widget.NewButtonWithIcon("Save Changes", theme.DocumentSaveIcon(), func() {
-			// Get the edited content
-			editedContent := contentEntry.Text
-
-			// Create a temporary file for the edited content
-			tmpFile, err := os.CreateTemp("", "gpg_edit_*")
-			if err != nil {
-				dialog.ShowError(fmt.Errorf("Failed to create temporary file: %v", err), window)
-				return
-			}
-			tmpFileName := tmpFile.Name()
-
-			// Write the edited content to the temporary file
-			if _, err := tmpFile.WriteString(editedContent); err != nil {
-				dialog.ShowError(fmt.Errorf("Failed to write to temporary file: %v", err), window)
-				os.Remove(tmpFileName)
-				return
-			}
-			tmpFile.Close()
+			// Edited plaintext is streamed straight to gpg over stdin — never
+			// staged to a temp file — so a crash here cannot leave plaintext
+			// on disk.
+			editedContent := []byte(contentEntry.Text)
 
 			// Get the recipient from the original file
 			recipient, gpgStderr, err := gpg.ListRecipientKeyID(filePath)
@@ -150,10 +136,7 @@ func decryptAndEditFile(filePath string, window fyne.Window) {
 							}
 
 							// Now encrypt with the provided recipient
-							gpgStderr, err := gpg.EncryptFile(tmpFileName, filePath, recipient)
-							// Clean up the temporary file
-							os.Remove(tmpFileName)
-
+							gpgStderr, err := gpg.EncryptBytes(editedContent, filePath, recipient)
 							if err != nil {
 								dialog.ShowError(fmt.Errorf("Failed to encrypt file: %v\n%s", err, gpgStderr), window)
 								return
@@ -170,10 +153,7 @@ func decryptAndEditFile(filePath string, window fyne.Window) {
 				recipientDialog.Show()
 			} else {
 				// Encrypt the edited content with the detected recipient
-				gpgStderr, err := gpg.EncryptFile(tmpFileName, filePath, recipient)
-				// Clean up the temporary file
-				os.Remove(tmpFileName)
-
+				gpgStderr, err := gpg.EncryptBytes(editedContent, filePath, recipient)
 				if err != nil {
 					dialog.ShowError(fmt.Errorf("Failed to encrypt file: %v\n%s", err, gpgStderr), window)
 					return
@@ -340,28 +320,14 @@ func createNewPasswordFile(targetPath, recordName, content, recipient string) er
 	if _, err := os.Stat(filePath); err == nil {
 		return fmt.Errorf("password file '%s' already exists", recordName)
 	}
-	
-	// Create a temporary file for the content
-	tmpFile, err := os.CreateTemp("", "gpg_new_*")
-	if err != nil {
-		return fmt.Errorf("failed to create temporary file: %v", err)
-	}
-	tmpFileName := tmpFile.Name()
-	defer os.Remove(tmpFileName)
-	
-	// Write content to temporary file
-	if _, err := tmpFile.WriteString(content); err != nil {
-		tmpFile.Close()
-		return fmt.Errorf("failed to write to temporary file: %v", err)
-	}
-	tmpFile.Close()
-	
-	// Encrypt the file using GPG
-	gpgStderr, err := gpg.EncryptFile(tmpFileName, filePath, recipient)
+
+	// Encrypt the content directly through stdin so the plaintext is never
+	// written to disk in the clear.
+	gpgStderr, err := gpg.EncryptBytes([]byte(content), filePath, recipient)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt file: %v\n%s", err, gpgStderr)
 	}
-	
+
 	return nil
 }
 

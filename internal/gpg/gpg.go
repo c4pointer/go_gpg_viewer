@@ -51,14 +51,16 @@ func buildDecryptCmd(ctx context.Context, filePath, passphrase string) *exec.Cmd
 	return cmd
 }
 
-// EncryptFile encrypts inputFile to outputFile for the given GPG recipient.
-// gpg writes the ciphertext directly to outputFile, so the only thing
-// returned for diagnostics is stderr.
-func EncryptFile(inputFile, outputFile, recipient string) (stderr []byte, err error) {
+// EncryptBytes encrypts the given plaintext to outputFile for the given GPG
+// recipient. The plaintext is streamed to gpg through stdin so it never
+// touches disk in cleartext (no temp file). gpg writes the ciphertext
+// directly to outputFile, so only stderr is returned for diagnostics.
+func EncryptBytes(plaintext []byte, outputFile, recipient string) (stderr []byte, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "gpg", "--batch", "--yes", "--recipient", recipient,
-		"--output", outputFile, "--encrypt", inputFile)
+		"--output", outputFile, "--encrypt")
+	cmd.Stdin = bytes.NewReader(plaintext)
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
 	err = cmd.Run()
