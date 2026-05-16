@@ -17,7 +17,8 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"go_gpg_viewer/assets"
-	scanpassstore "go_gpg_viewer/scanpassstore" // Adjust the import path according to your project structure
+	"go_gpg_viewer/internal/gpg"
+	scanpassstore "go_gpg_viewer/scanpassstore"
 	"go_gpg_viewer/settings"
 )
 
@@ -38,18 +39,7 @@ func decryptAndEditFile(filePath string, window fyne.Window) {
 	// Define the decryption function inline to avoid scope issues
 	var decryptAndEdit func(string, string)
 	decryptAndEdit = func(filePath string, passphrase string) {
-		// Create a command to decrypt the GPG file
-		var cmd *exec.Cmd
-		if passphrase == "" {
-			// Try to decrypt without passphrase (using GPG agent)
-			cmd = exec.Command("gpg", "--batch", "--decrypt", filePath)
-		} else {
-			// Use provided passphrase
-			cmd = exec.Command("gpg", "--batch", "--passphrase", passphrase, "--decrypt", filePath)
-		}
-
-		// Run the command and get the output
-		output, err := cmd.CombinedOutput()
+		output, err := gpg.Decrypt(filePath, passphrase)
 		if err != nil {
 			// If this was a first attempt without passphrase, prompt for passphrase
 			if passphrase == "" {
@@ -140,29 +130,10 @@ func decryptAndEditFile(filePath string, window fyne.Window) {
 			tmpFile.Close()
 
 			// Get the recipient from the original file
-			recipientCmd := exec.Command("gpg", "--batch", "--list-packets", filePath)
-			recipientOutput, err := recipientCmd.CombinedOutput()
+			recipient, recipientOutput, err := gpg.ListRecipientKeyID(filePath)
 			if err != nil {
 				dialog.ShowError(fmt.Errorf("Failed to get recipient info: %v\n%s", err, recipientOutput), window)
 				return
-			}
-
-			// Parse the output to find the recipient
-			recipientStr := string(recipientOutput)
-			var recipient string
-
-			// Look for keyid in the output
-			for _, line := range strings.Split(recipientStr, "\n") {
-				if strings.Contains(line, "keyid") {
-					parts := strings.Split(line, "keyid")
-					if len(parts) > 1 {
-						keyidPart := strings.TrimSpace(parts[1])
-						if len(keyidPart) > 16 { // Typical keyid length with some buffer
-							recipient = keyidPart[:16]
-							break
-						}
-					}
-				}
 			}
 
 			if recipient == "" {
@@ -191,10 +162,7 @@ func decryptAndEditFile(filePath string, window fyne.Window) {
 							}
 
 							// Now encrypt with the provided recipient
-							cmd := exec.Command("gpg", "--batch", "--yes", "--recipient", recipient,
-								"--output", filePath, "--encrypt", tmpFileName)
-
-							output, err := cmd.CombinedOutput()
+							output, err := gpg.EncryptFile(tmpFileName, filePath, recipient)
 							// Clean up the temporary file
 							os.Remove(tmpFileName)
 
@@ -213,11 +181,8 @@ func decryptAndEditFile(filePath string, window fyne.Window) {
 				)
 				recipientDialog.Show()
 			} else {
-				// Create a command to encrypt the edited content with the detected recipient
-				cmd := exec.Command("gpg", "--batch", "--yes", "--recipient", recipient,
-					"--output", filePath, "--encrypt", tmpFileName)
-
-				output, err := cmd.CombinedOutput()
+				// Encrypt the edited content with the detected recipient
+				output, err := gpg.EncryptFile(tmpFileName, filePath, recipient)
 				// Clean up the temporary file
 				os.Remove(tmpFileName)
 
@@ -405,10 +370,7 @@ func createNewPasswordFile(targetPath, recordName, content, recipient string) er
 	tmpFile.Close()
 	
 	// Encrypt the file using GPG
-	cmd := exec.Command("gpg", "--batch", "--yes", "--recipient", recipient,
-		"--output", filePath, "--encrypt", tmpFileName)
-	
-	output, err := cmd.CombinedOutput()
+	output, err := gpg.EncryptFile(tmpFileName, filePath, recipient)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt file: %v\n%s", err, output)
 	}
@@ -871,223 +833,9 @@ func main() {
 		}
 
 		if fileName != "" {
-			// Start the decryption process
-			go func() {
-				// Define the decryption function inline to avoid scope issues
-				var decryptAndEdit func(string, string)
-				decryptAndEdit = func(filePath string, passphrase string) {
-					// Create a command to decrypt the GPG file
-					var cmd *exec.Cmd
-					if passphrase == "" {
-						// Try to decrypt without passphrase (using GPG agent)
-						cmd = exec.Command("gpg", "--batch", "--decrypt", filePath)
-					} else {
-						// Use provided passphrase
-						cmd = exec.Command("gpg", "--batch", "--passphrase", passphrase, "--decrypt", filePath)
-					}
-
-					// Run the command and get the output
-					output, err := cmd.CombinedOutput()
-					if err != nil {
-						// If this was a first attempt without passphrase, prompt for passphrase
-						if passphrase == "" {
-							// Show passphrase dialog
-							fyne.Do(func() {
-								passphraseEntry := widget.NewPasswordEntry()
-								fileName := filepath.Base(filePath)
-
-								passphraseDialog := dialog.NewCustomConfirm(
-									"Enter Passphrase",
-									"Decrypt",
-									"Cancel",
-									container.NewVBox(
-										widget.NewLabel(fmt.Sprintf("File: %s", strings.TrimSuffix(fileName, ".gpg"))),
-										widget.NewLabel("GPG agent requires passphrase. Please enter:"),
-										passphraseEntry,
-									),
-									func(decrypt bool) {
-										if decrypt {
-											newPassphrase := passphraseEntry.Text
-											if newPassphrase == "" {
-												dialog.ShowError(errors.New("Passphrase cannot be empty"), myWindow)
-												return
-											}
-
-											// Try again with the provided passphrase
-											go func() {
-												decryptAndEdit(filePath, newPassphrase)
-											}()
-										}
-									},
-									myWindow,
-								)
-								passphraseDialog.Show()
-							})
-							return
-						} else {
-							// This was already a passphrase attempt, show error
-							fyne.Do(func() {
-								dialog.ShowError(fmt.Errorf("Failed to decrypt file: %v\n%s", err, output), myWindow)
-							})
-							return
-						}
-					}
-
-					// Filter out GPG header information
-					lines := strings.Split(string(output), "\n")
-					var contentLines []string
-					for _, line := range lines {
-						// Skip lines that contain GPG header information
-						if strings.HasPrefix(line, "gpg:") ||
-							strings.Contains(line, "encrypted with") ||
-							strings.Contains(line, "created") ||
-							strings.Contains(line, "<c4point@gmail.com>") {
-							continue
-						}
-						contentLines = append(contentLines, line)
-					}
-
-					// Join the filtered lines back together
-					filteredContent := strings.Join(contentLines, "\n")
-
-					// Create an entry widget with the filtered decrypted content
-					contentEntry := widget.NewMultiLineEntry()
-					contentEntry.SetText(filteredContent)
-
-					// Create buttons first
-					var editDialog *dialog.CustomDialog
-
-					saveBtn := widget.NewButton("Save Changes", func() {
-						// Get the edited content
-						editedContent := contentEntry.Text
-
-						// Create a temporary file for the edited content
-						tmpFile, err := os.CreateTemp("", "gpg_edit_*")
-						if err != nil {
-							dialog.ShowError(fmt.Errorf("Failed to create temporary file: %v", err), myWindow)
-							return
-						}
-						tmpFileName := tmpFile.Name()
-
-						// Write the edited content to the temporary file
-						if _, err := tmpFile.WriteString(editedContent); err != nil {
-							dialog.ShowError(fmt.Errorf("Failed to write to temporary file: %v", err), myWindow)
-							os.Remove(tmpFileName)
-							return
-						}
-						tmpFile.Close()
-
-						// Get the recipient from the original file
-						recipientCmd := exec.Command("gpg", "--batch", "--list-packets", filePath)
-						recipientOutput, err := recipientCmd.CombinedOutput()
-						if err != nil {
-							dialog.ShowError(fmt.Errorf("Failed to get recipient info: %v\n%s", err, recipientOutput), myWindow)
-							return
-						}
-
-						// Parse the output to find the recipient
-						recipientStr := string(recipientOutput)
-						var recipient string
-
-						// Look for keyid in the output
-						for _, line := range strings.Split(recipientStr, "\n") {
-							if strings.Contains(line, "keyid") {
-								parts := strings.Split(line, "keyid")
-								if len(parts) > 1 {
-									keyidPart := strings.TrimSpace(parts[1])
-									if len(keyidPart) > 16 { // Typical keyid length with some buffer
-										recipient = keyidPart[:16]
-										break
-									}
-								}
-							}
-						}
-
-						if recipient == "" {
-							// If we couldn't find the recipient, ask the user
-							recipientEntry := widget.NewEntry()
-							if defaultRecipient != "" {
-								recipientEntry.SetText(defaultRecipient)
-							} else {
-								recipientEntry.SetPlaceHolder("email or key ID")
-							}
-							recipientDialog := dialog.NewCustomConfirm(
-								"Enter Recipient",
-								"Encrypt",
-								"Cancel",
-								container.NewVBox(
-									widget.NewLabel("Could not detect recipient automatically."),
-									widget.NewLabel("Please enter GPG recipient (email or key ID):"),
-									recipientEntry,
-								),
-								func(confirm bool) {
-									if confirm {
-										recipient = recipientEntry.Text
-										if recipient == "" {
-											dialog.ShowError(errors.New("Recipient cannot be empty"), myWindow)
-											return
-										}
-
-										// Now encrypt with the provided recipient
-										cmd := exec.Command("gpg", "--batch", "--yes", "--recipient", recipient,
-											"--output", filePath, "--encrypt", tmpFileName)
-
-										output, err := cmd.CombinedOutput()
-										// Clean up the temporary file
-										os.Remove(tmpFileName)
-
-										if err != nil {
-											dialog.ShowError(fmt.Errorf("Failed to encrypt file: %v\n%s", err, output), myWindow)
-											return
-										}
-
-										dialog.ShowInformation("Success", "File saved successfully", myWindow)
-										if editDialog != nil {
-											editDialog.Hide()
-										}
-									}
-								},
-								myWindow,
-							)
-							recipientDialog.Show()
-						} else {
-							// Create a command to encrypt the edited content with the detected recipient
-							cmd := exec.Command("gpg", "--batch", "--yes", "--recipient", recipient,
-								"--output", filePath, "--encrypt", tmpFileName)
-
-							output, err := cmd.CombinedOutput()
-							// Clean up the temporary file
-							os.Remove(tmpFileName)
-
-							if err != nil {
-								dialog.ShowError(fmt.Errorf("Failed to encrypt file: %v\n%s", err, output), myWindow)
-								return
-							}
-
-							dialog.ShowInformation("Success", "File saved successfully", myWindow)
-							if editDialog != nil {
-								editDialog.Hide()
-							}
-						}
-					})
-
-					closeBtn := widget.NewButton("Close", func() {
-						if editDialog != nil {
-							editDialog.Hide()
-						}
-					})
-
-					// Create the dialog with content and buttons
-					buttonContainer := container.NewHBox(saveBtn, closeBtn)
-					contentContainer := container.NewBorder(nil, buttonContainer, nil, nil, contentEntry)
-					editDialog = dialog.NewCustomWithoutButtons("Edit Password File", contentContainer, myWindow)
-					editDialog.Resize(fyne.NewSize(600, 400))
-					editDialog.Show()
-				}
-
-				// Start the decryption process
-				decryptAndEdit(filePath, "")
-			}()
+			// Delegate to the shared decrypt+edit pipeline used everywhere
+			// else in the app instead of inlining a second copy of it.
+			go decryptAndEditFile(filePath, myWindow)
 		}
 	}
 
