@@ -19,6 +19,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 	"go_gpg_viewer/assets"
 	"go_gpg_viewer/internal/gpg"
+	"go_gpg_viewer/internal/password"
 	"go_gpg_viewer/internal/storepath"
 	scanpassstore "go_gpg_viewer/scanpassstore"
 	"go_gpg_viewer/settings"
@@ -209,7 +210,19 @@ func showNewRecordDialog(window fyne.Window, targetPath string, defaultRecipient
 	
 	passwordEntry := widget.NewPasswordEntry()
 	passwordEntry.SetPlaceHolder("Enter password")
-	
+
+	// Generate fills the password entry with a 20-char random password
+	// drawn from password.DefaultCharset.
+	generateBtn := widget.NewButtonWithIcon("Generate", theme.ViewRefreshIcon(), func() {
+		pw, err := password.Generate(20, password.DefaultCharset)
+		if err != nil {
+			dialog.ShowError(fmt.Errorf("Failed to generate password: %v", err), window)
+			return
+		}
+		passwordEntry.SetText(pw)
+	})
+	passwordRow := container.NewBorder(nil, nil, nil, generateBtn, passwordEntry)
+
 	notesEntry := widget.NewMultiLineEntry()
 	notesEntry.SetPlaceHolder("Additional notes (optional)")
 	notesEntry.Resize(fyne.NewSize(400, 100))
@@ -233,7 +246,7 @@ func showNewRecordDialog(window fyne.Window, targetPath string, defaultRecipient
 		usernameEntry,
 		
 		widget.NewLabel("Password:"),
-		passwordEntry,
+		passwordRow,
 		
 		widget.NewLabel("Notes:"),
 		notesEntry,
