@@ -8,6 +8,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -34,6 +35,19 @@ type AppState struct {
 
 // defaultRecipient is populated from settings and used to prefill recipient dialogs
 var defaultRecipient string
+
+// storePtr holds the current PasswordStore snapshot. It is updated atomically
+// by the toolbar refresh actions and read concurrently from background
+// goroutines (tree/fileList decryption). Every reader should call
+// currentStore() to get a snapshot, never dereference storePtr directly.
+var storePtr atomic.Pointer[scanpassstore.PasswordStore]
+
+// currentStore returns the latest PasswordStore snapshot. It is safe to call
+// from any goroutine; concurrent refreshes will simply expose newer snapshots
+// to subsequent calls.
+func currentStore() *scanpassstore.PasswordStore {
+	return storePtr.Load()
+}
 
 // decryptAndEditFile handles the decryption and editing of a GPG file
 func decryptAndEditFile(filePath string, window fyne.Window) {
@@ -361,11 +375,12 @@ func main() {
 	}
 
 	// Scan password store
-	store, err := scanpassstore.ScanPasswordStore(targetPath)
+	initialStore, err := scanpassstore.ScanPasswordStore(targetPath)
 	if err != nil {
 		fmt.Println("Error scanning password store:", err)
 		return
 	}
+	storePtr.Store(initialStore)
 
 	// Initialize GUI
 	myApp := app.New()
@@ -400,29 +415,29 @@ func main() {
 		func(id widget.TreeNodeID) []widget.TreeNodeID {
 			if id == "" {
 				// Root level items
-				if len(store.RootFiles) > 0 {
+				if len(currentStore().RootFiles) > 0 {
 					return []widget.TreeNodeID{"Root", "Directories"}
 				}
 				return []widget.TreeNodeID{"Directories"}
 			} else if id == "Root" {
 				// Root files - show them as child nodes
-				return store.RootFiles
+				return currentStore().RootFiles
 			} else if id == "Directories" {
 				// Directory names
-				return store.Directories
-			} else if files, ok := store.DirContents[id]; ok {
+				return currentStore().Directories
+			} else if files, ok := currentStore().DirContents[id]; ok {
 				// Files in a directory - show them as child nodes
 				var children []widget.TreeNodeID
 				children = append(children, files...)
 
 				// Add subdirectories if they exist
-				if subdirs, ok := store.NestedDirs[id]; ok {
+				if subdirs, ok := currentStore().NestedDirs[id]; ok {
 					children = append(children, subdirs...)
 				}
 				return children
 			} else {
 				// Check if this is a root file (no parent directory)
-				for _, rootFile := range store.RootFiles {
+				for _, rootFile := range currentStore().RootFiles {
 					if rootFile == id {
 						return []widget.TreeNodeID{} // Root files are leaf nodes
 					}
@@ -430,12 +445,12 @@ func main() {
 
 				// Check if this is a subdirectory path (e.g., "Finance/subfolder1")
 				// We need to check if this ID exists as a full path in DirContents
-				if files, ok := store.DirContents[id]; ok {
+				if files, ok := currentStore().DirContents[id]; ok {
 					var children []widget.TreeNodeID
 					children = append(children, files...)
 
 					// Add nested subdirectories if they exist
-					if subdirs, ok := store.NestedDirs[id]; ok {
+					if subdirs, ok := currentStore().NestedDirs[id]; ok {
 						children = append(children, subdirs...)
 					}
 					return children
@@ -444,7 +459,7 @@ func main() {
 				// Check if this is a subdirectory name that should be expanded
 				// First, find which parent directory this subdirectory belongs to
 				var parentDir string
-				for parent, subdirs := range store.NestedDirs {
+				for parent, subdirs := range currentStore().NestedDirs {
 					for _, subdir := range subdirs {
 						if subdir == id {
 							parentDir = parent
@@ -459,14 +474,14 @@ func main() {
 				// If we found the parent, construct the full path and get the contents
 				if parentDir != "" {
 					fullPath := parentDir + "/" + id
-					if files, ok := store.DirContents[fullPath]; ok {
+					if files, ok := currentStore().DirContents[fullPath]; ok {
 						return files
 					}
 				}
 
 				// Fallback: Look for entries in DirContents that start with this ID + "/"
 				var children []widget.TreeNodeID
-				for fullPath := range store.DirContents {
+				for fullPath := range currentStore().DirContents {
 					if strings.HasPrefix(fullPath, id+"/") {
 						// Extract the subdirectory name
 						parts := strings.Split(fullPath, "/")
@@ -485,24 +500,24 @@ func main() {
 		func(id widget.TreeNodeID) bool {
 			if id == "" || id == "Directories" {
 				return true
-			} else if id == "Root" && len(store.RootFiles) > 0 {
+			} else if id == "Root" && len(currentStore().RootFiles) > 0 {
 				return true
-			} else if _, ok := store.NestedDirs[id]; ok {
+			} else if _, ok := currentStore().NestedDirs[id]; ok {
 				// Subdirectories are expandable if they have files or subdirectories
 				return true
-			} else if _, ok := store.DirContents[id]; ok {
+			} else if _, ok := currentStore().DirContents[id]; ok {
 				// Directories are expandable if they have files or subdirectories
 				return true
 			} else {
 				// Check if this is a subdirectory by looking for entries that start with parent + "/"
-				for fullPath := range store.DirContents {
+				for fullPath := range currentStore().DirContents {
 					if strings.HasPrefix(fullPath, id+"/") {
 						return true
 					}
 				}
 
 				// Check if this is a subdirectory name that appears in any parent's NestedDirs
-				for _, subdirs := range store.NestedDirs {
+				for _, subdirs := range currentStore().NestedDirs {
 					for _, subdir := range subdirs {
 						if subdir == id {
 							return true
@@ -528,7 +543,7 @@ func main() {
 			default:
 				// Check if this is a directory, subdirectory, or file
 				// First check if it's a subdirectory (in NestedDirs)
-				if _, ok := store.NestedDirs[id]; ok {
+				if _, ok := currentStore().NestedDirs[id]; ok {
 					// It's a subdirectory
 					dirName := id
 					if strings.Contains(id, "/") {
@@ -536,7 +551,7 @@ func main() {
 						dirName = parts[len(parts)-1]
 					}
 					label.SetText("📂 " + dirName)
-				} else if _, ok := store.DirContents[id]; ok {
+				} else if _, ok := currentStore().DirContents[id]; ok {
 					// It's a directory (has files)
 					// Extract just the directory name from the path
 					dirName := id
@@ -555,7 +570,7 @@ func main() {
 					// Check if this is a subdirectory by looking for entries that start with parent + "/"
 					// This handles cases where we have "New" as a subdirectory of "Finance"
 					isSubdirectory := false
-					for fullPath := range store.DirContents {
+					for fullPath := range currentStore().DirContents {
 						if strings.HasPrefix(fullPath, id+"/") {
 							isSubdirectory = true
 							break
@@ -567,7 +582,7 @@ func main() {
 					} else {
 						// Check if this is a subdirectory name that appears in any parent's NestedDirs
 						// This handles cases where "New" is a subdirectory of "Finance"
-						for _, subdirs := range store.NestedDirs {
+						for _, subdirs := range currentStore().NestedDirs {
 							for _, subdir := range subdirs {
 								if subdir == id {
 									label.SetText("📂 " + id)
@@ -624,7 +639,7 @@ func main() {
 		var allRel []string
 		sep := string(os.PathSeparator)
 		prefix := targetPath + sep
-		for _, full := range store.AllPaths {
+		for _, full := range currentStore().AllPaths {
 			rel := strings.TrimPrefix(full, prefix)
 			if strings.HasSuffix(rel, ".gpg") {
 				rel = strings.TrimSuffix(rel, ".gpg")
@@ -659,13 +674,13 @@ func main() {
 
 		if id == "Root" {
 			// Show root files
-			fileList.Length = func() int { return len(store.RootFiles) }
+			fileList.Length = func() int { return len(currentStore().RootFiles) }
 			fileList.UpdateItem = func(id widget.ListItemID, o fyne.CanvasObject) {
 				label := o.(*widget.Label)
-				label.SetText(store.RootFiles[id])
+				label.SetText(currentStore().RootFiles[id])
 			}
-			contentLabel.SetText(fmt.Sprintf("Root directory contains %d password files", len(store.RootFiles)))
-		} else if files, ok := store.DirContents[id]; ok {
+			contentLabel.SetText(fmt.Sprintf("Root directory contains %d password files", len(currentStore().RootFiles)))
+		} else if files, ok := currentStore().DirContents[id]; ok {
 			// Show files in selected directory
 			fileList.Length = func() int { return len(files) }
 			fileList.UpdateItem = func(id widget.ListItemID, o fyne.CanvasObject) {
@@ -678,7 +693,7 @@ func main() {
 			var fileName string
 
 			// Check if it's a root file
-			for _, rootFile := range store.RootFiles {
+			for _, rootFile := range currentStore().RootFiles {
 				if rootFile == id {
 					fileName = rootFile
 					break
@@ -687,7 +702,7 @@ func main() {
 
 			// If not a root file, check if it's a file in any directory
 			if fileName == "" {
-				for _, dirFiles := range store.DirContents {
+				for _, dirFiles := range currentStore().DirContents {
 					for _, dirFile := range dirFiles {
 						if dirFile == id {
 							fileName = dirFile
@@ -718,7 +733,7 @@ func main() {
 					var filePath string
 
 					// Check if it's a root file
-					for _, rootFile := range store.RootFiles {
+					for _, rootFile := range currentStore().RootFiles {
 						if rootFile == id {
 							filePath = filepath.Join(targetPath, fileName+".gpg")
 							break
@@ -729,7 +744,7 @@ func main() {
 					// absolute path from the parent directory (which is the
 					// authoritative source of the relative location).
 					if filePath == "" {
-						for dirName, dirFiles := range store.DirContents {
+						for dirName, dirFiles := range currentStore().DirContents {
 							for _, dirFile := range dirFiles {
 								if dirFile == id {
 									filePath = filepath.Join(targetPath, dirName, fileName+".gpg")
@@ -775,9 +790,9 @@ func main() {
 		var filePath string
 
 		if selectedDir == "Root" {
-			fileName = store.RootFiles[id]
+			fileName = currentStore().RootFiles[id]
 			filePath = filepath.Join(targetPath, fileName+".gpg")
-		} else if files, ok := store.DirContents[selectedDir]; ok && id < len(files) {
+		} else if files, ok := currentStore().DirContents[selectedDir]; ok && id < len(files) {
 			fileName = files[id]
 			// selectedDir already carries the full relative directory path
 			// (e.g. "Finance" or "Finance/subfolder"), so we can construct
@@ -820,11 +835,12 @@ func main() {
 	toolbar := widget.NewToolbar(
 		widget.NewToolbarAction(theme.ViewRefreshIcon(), func() {
 			// Refresh the password store data
-			store, err = scanpassstore.ScanPasswordStore(targetPath)
+			newStore, err := scanpassstore.ScanPasswordStore(targetPath)
 			if err != nil {
 				dialog.ShowError(err, myWindow)
 				return
 			}
+			storePtr.Store(newStore)
 			tree.Refresh()
 			fileList.Refresh()
 			contentLabel.SetText("Password store refreshed")
@@ -834,11 +850,12 @@ func main() {
 			// Show new record creation dialog
 			showNewRecordDialog(myWindow, targetPath, defaultRecipient, func() {
 				// Refresh callback after creating new record
-				store, err = scanpassstore.ScanPasswordStore(targetPath)
+				newStore, err := scanpassstore.ScanPasswordStore(targetPath)
 				if err != nil {
 					dialog.ShowError(err, myWindow)
 					return
 				}
+				storePtr.Store(newStore)
 				tree.Refresh()
 				fileList.Refresh()
 				contentLabel.SetText("Password store refreshed")
@@ -1043,8 +1060,8 @@ func main() {
 					progressBar.SetValue(1.0)
 
 					// Refresh the store data
-					store, err = scanpassstore.ScanPasswordStore(targetPath)
-					if err == nil {
+					if newStore, refreshErr := scanpassstore.ScanPasswordStore(targetPath); refreshErr == nil {
+						storePtr.Store(newStore)
 						tree.Refresh()
 						fileList.Refresh()
 					}
