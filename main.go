@@ -810,23 +810,19 @@ func main() {
 						}
 					}
 
-					// If not a root file, check if it's a file in any directory
+					// If not a root file, locate it via DirContents and build the
+					// absolute path from the parent directory (which is the
+					// authoritative source of the relative location).
 					if filePath == "" {
-						// Use the AllPaths map to get the full path
-						if fullPath, ok := store.AllPaths[fileName]; ok {
-							filePath = fullPath
-						} else {
-							// Fallback to old logic for backward compatibility
-							for dirName, dirFiles := range store.DirContents {
-								for _, dirFile := range dirFiles {
-									if dirFile == id {
-										filePath = filepath.Join(targetPath, dirName, fileName+".gpg")
-										break
-									}
-								}
-								if filePath != "" {
+						for dirName, dirFiles := range store.DirContents {
+							for _, dirFile := range dirFiles {
+								if dirFile == id {
+									filePath = filepath.Join(targetPath, dirName, fileName+".gpg")
 									break
 								}
+							}
+							if filePath != "" {
+								break
 							}
 						}
 					}
@@ -868,13 +864,10 @@ func main() {
 			filePath = filepath.Join(targetPath, fileName+".gpg")
 		} else if files, ok := store.DirContents[selectedDir]; ok && id < len(files) {
 			fileName = files[id]
-			// Use AllPaths for nested directory support
-			if fullPath, ok := store.AllPaths[fileName]; ok {
-				filePath = fullPath
-			} else {
-				// Fallback to old logic
-				filePath = filepath.Join(targetPath, selectedDir, fileName+".gpg")
-			}
+			// selectedDir already carries the full relative directory path
+			// (e.g. "Finance" or "Finance/subfolder"), so we can construct
+			// the absolute path directly without consulting AllPaths.
+			filePath = filepath.Join(targetPath, selectedDir, fileName+".gpg")
 		}
 
 		if fileName != "" {

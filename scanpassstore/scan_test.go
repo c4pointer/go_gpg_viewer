@@ -83,16 +83,17 @@ func TestScanPasswordStore(t *testing.T) {
 	assert.Len(t, store.DirContents["dir2/subdir2/nested"], 1)
 	assert.Contains(t, store.DirContents["dir2/subdir2/nested"], "nestedfile")
 
-	// Verify all paths mapping
+	// Verify all paths mapping. Non-root entries are keyed by their full
+	// relative path to avoid base-name collisions across directories.
 	expectedPaths := map[string]string{
-		"root1":      filepath.Join(tempDir, "root1.gpg"),
-		"root2":      filepath.Join(tempDir, "root2.gpg"),
-		"file1":      filepath.Join(tempDir, "dir1", "file1.gpg"),
-		"file2":      filepath.Join(tempDir, "dir1", "file2.gpg"),
-		"file3":      filepath.Join(tempDir, "dir2", "file3.gpg"),
-		"subfile1":   filepath.Join(tempDir, "dir1", "subdir1", "subfile1.gpg"),
-		"subfile2":   filepath.Join(tempDir, "dir2", "subdir2", "subfile2.gpg"),
-		"nestedfile": filepath.Join(tempDir, "dir2", "subdir2", "nested", "nestedfile.gpg"),
+		"root1": filepath.Join(tempDir, "root1.gpg"),
+		"root2": filepath.Join(tempDir, "root2.gpg"),
+		filepath.Join("dir1", "file1"):                       filepath.Join(tempDir, "dir1", "file1.gpg"),
+		filepath.Join("dir1", "file2"):                       filepath.Join(tempDir, "dir1", "file2.gpg"),
+		filepath.Join("dir2", "file3"):                       filepath.Join(tempDir, "dir2", "file3.gpg"),
+		filepath.Join("dir1", "subdir1", "subfile1"):         filepath.Join(tempDir, "dir1", "subdir1", "subfile1.gpg"),
+		filepath.Join("dir2", "subdir2", "subfile2"):         filepath.Join(tempDir, "dir2", "subdir2", "subfile2.gpg"),
+		filepath.Join("dir2", "subdir2", "nested", "nestedfile"): filepath.Join(tempDir, "dir2", "subdir2", "nested", "nestedfile.gpg"),
 	}
 
 	for expectedFile, expectedPath := range expectedPaths {
@@ -100,6 +101,40 @@ func TestScanPasswordStore(t *testing.T) {
 		assert.True(t, exists, "File %s should exist in AllPaths", expectedFile)
 		assert.Equal(t, expectedPath, actualPath, "Path mismatch for file %s", expectedFile)
 	}
+}
+
+// TestScanPasswordStoreDuplicateFilenames ensures that files sharing a base
+// name in different directories each get their own entry in AllPaths.
+// Regression test for the previous behaviour where the second assignment
+// silently overwrote the first.
+func TestScanPasswordStoreDuplicateFilenames(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "duplicate_filename_test")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	for _, dir := range []string{"Finance", "Personal", filepath.Join("Personal", "nested")} {
+		require.NoError(t, os.MkdirAll(filepath.Join(tempDir, dir), 0755))
+	}
+
+	files := []string{
+		filepath.Join("Finance", "secret.gpg"),
+		filepath.Join("Personal", "secret.gpg"),
+		filepath.Join("Personal", "nested", "secret.gpg"),
+	}
+	for _, f := range files {
+		require.NoError(t, os.WriteFile(filepath.Join(tempDir, f), []byte("test"), 0644))
+	}
+
+	store, err := ScanPasswordStore(tempDir)
+	require.NoError(t, err)
+
+	assert.Len(t, store.AllPaths, 3, "all three same-name files must be retained")
+	assert.Equal(t, filepath.Join(tempDir, "Finance", "secret.gpg"),
+		store.AllPaths[filepath.Join("Finance", "secret")])
+	assert.Equal(t, filepath.Join(tempDir, "Personal", "secret.gpg"),
+		store.AllPaths[filepath.Join("Personal", "secret")])
+	assert.Equal(t, filepath.Join(tempDir, "Personal", "nested", "secret.gpg"),
+		store.AllPaths[filepath.Join("Personal", "nested", "secret")])
 }
 
 func TestScanPasswordStoreEmptyDirectory(t *testing.T) {

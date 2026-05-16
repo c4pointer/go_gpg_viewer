@@ -14,7 +14,10 @@ type PasswordStore struct {
 	DirContents map[string][]string
 	// New fields for nested structure
 	NestedDirs map[string][]string // Maps directory path to its subdirectories
-	AllPaths   map[string]string   // Maps display name to full path
+	// AllPaths maps a relative store path (without the .gpg extension) to its
+	// absolute file path. Root entries are keyed by their base name; nested
+	// entries are keyed by their full relative path (e.g. "Finance/bank").
+	AllPaths map[string]string
 }
 
 // scanDirectory recursively scans a directory for .gpg files and subdirectories
@@ -100,10 +103,12 @@ func ScanPasswordStore(targetPath string) (*PasswordStore, error) {
 				store.DirContents[dir.Name()] = files
 				store.NestedDirs[dir.Name()] = subdirs
 
-				// Store full paths for files in this directory (not subdirectories)
+				// Store full paths for files in this directory (not subdirectories).
+				// Key by the full relative path so that two files with the same
+				// base name in different directories do not overwrite each other.
 				for _, file := range files {
 					filePath := filepath.Join(dirPath, file+".gpg")
-					store.AllPaths[file] = filePath
+					store.AllPaths[filepath.Join(dir.Name(), file)] = filePath
 				}
 
 				// Recursively process subdirectories to build complete structure
@@ -132,10 +137,11 @@ func (store *PasswordStore) processSubdirectories(parentPath string, parentRelat
 		store.DirContents[subdirRelativePath] = files
 		store.NestedDirs[subdirRelativePath] = nestedSubdirs
 
-		// Store full paths for files in this subdirectory
+		// Store full paths for files in this subdirectory, keyed by full
+		// relative path to avoid collisions between same-name files.
 		for _, file := range files {
 			filePath := filepath.Join(subdirPath, file+".gpg")
-			store.AllPaths[file] = filePath
+			store.AllPaths[filepath.Join(subdirRelativePath, file)] = filePath
 		}
 
 		// Recursively process nested subdirectories
