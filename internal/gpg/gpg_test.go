@@ -1,10 +1,37 @@
 package gpg
 
 import (
+	"io"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestBuildDecryptCmdKeepsPassphraseOutOfArgv(t *testing.T) {
+	const secret = "hunter2-super-secret"
+	cmd := buildDecryptCmd("/tmp/file.gpg", secret)
+
+	for _, arg := range cmd.Args {
+		assert.NotContains(t, arg, secret,
+			"passphrase must never appear in argv (visible via /proc/<pid>/cmdline)")
+	}
+	assert.Contains(t, cmd.Args, "--passphrase-fd")
+	assert.Contains(t, cmd.Args, "loopback")
+
+	require.NotNil(t, cmd.Stdin, "passphrase must be piped via stdin")
+	piped, err := io.ReadAll(cmd.Stdin)
+	require.NoError(t, err)
+	assert.Equal(t, secret+"\n", string(piped))
+}
+
+func TestBuildDecryptCmdNoPassphraseHasNoStdin(t *testing.T) {
+	cmd := buildDecryptCmd("/tmp/file.gpg", "")
+	assert.Nil(t, cmd.Stdin)
+	assert.NotContains(t, strings.Join(cmd.Args, " "), "--passphrase-fd")
+	assert.NotContains(t, strings.Join(cmd.Args, " "), "loopback")
+}
 
 func TestParseRecipientKeyID(t *testing.T) {
 	tests := []struct {

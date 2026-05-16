@@ -11,17 +11,26 @@ import (
 )
 
 // Decrypt runs `gpg --decrypt` on filePath. If passphrase is non-empty it is
-// supplied to gpg; otherwise the running gpg-agent is expected to unlock the
-// private key. The returned byte slice is the combined stdout+stderr output
-// from gpg (the existing call-sites need it as-is for now).
+// fed to gpg over stdin (never the argv) using --pinentry-mode loopback +
+// --passphrase-fd 0, so it is not visible to other users via
+// /proc/<pid>/cmdline. An empty passphrase relies on the running gpg-agent.
+// The returned byte slice is the combined stdout+stderr output from gpg.
 func Decrypt(filePath, passphrase string) ([]byte, error) {
-	var cmd *exec.Cmd
+	return buildDecryptCmd(filePath, passphrase).CombinedOutput()
+}
+
+// buildDecryptCmd assembles the gpg decrypt command. Exposed (unexported)
+// for testing to assert that the passphrase never lands in argv.
+func buildDecryptCmd(filePath, passphrase string) *exec.Cmd {
 	if passphrase == "" {
-		cmd = exec.Command("gpg", "--batch", "--decrypt", filePath)
-	} else {
-		cmd = exec.Command("gpg", "--batch", "--passphrase", passphrase, "--decrypt", filePath)
+		return exec.Command("gpg", "--batch", "--decrypt", filePath)
 	}
-	return cmd.CombinedOutput()
+	cmd := exec.Command("gpg", "--batch",
+		"--pinentry-mode", "loopback",
+		"--passphrase-fd", "0",
+		"--decrypt", filePath)
+	cmd.Stdin = strings.NewReader(passphrase + "\n")
+	return cmd
 }
 
 // EncryptFile encrypts inputFile to outputFile for the given GPG recipient.
