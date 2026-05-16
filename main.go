@@ -87,26 +87,11 @@ func decryptAndEditFile(filePath string, window fyne.Window) {
 			}
 		}
 
-		// Filter out GPG header information
-		lines := strings.Split(string(plaintext), "\n")
-		var contentLines []string
-		for _, line := range lines {
-			// Skip lines that contain GPG header information
-			if strings.HasPrefix(line, "gpg:") ||
-				strings.Contains(line, "encrypted with") ||
-				strings.Contains(line, "created") ||
-				strings.Contains(line, "<c4point@gmail.com>") {
-				continue
-			}
-			contentLines = append(contentLines, line)
-		}
-
-		// Join the filtered lines back together
-		filteredContent := strings.Join(contentLines, "\n")
-
-		// Create an entry widget with the filtered decrypted content
+		// Stdout is now captured separately from stderr, so it contains only
+		// the actual decrypted payload — no gpg meta lines, no recipient
+		// banners. Render it directly into the editor.
 		contentEntry := widget.NewMultiLineEntry()
-		contentEntry.SetText(filteredContent)
+		contentEntry.SetText(string(plaintext))
 
 		// Create buttons first
 		var editDialog *dialog.CustomDialog
