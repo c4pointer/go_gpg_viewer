@@ -20,6 +20,34 @@ func setTestConfigHome(t *testing.T, dir string) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, ".config"))
 }
 
+func TestIsValidRecipient(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		ok    bool
+	}{
+		{"empty is ok", "", true},
+		{"whitespace is ok", "  ", true},
+		{"simple email", "alice@example.com", true},
+		{"email with plus tag", "alice+gpg@example.com", true},
+		{"short keyid 8 hex", "DEADBEEF", true},
+		{"long keyid 16 hex", "0123456789ABCDEF", true},
+		{"fingerprint 40 hex", "0123456789ABCDEF0123456789ABCDEF01234567", true},
+		{"keyid with 0x prefix", "0x0123456789ABCDEF", true},
+
+		{"email without dot", "alice@example", false},
+		{"email with angle brackets", "<alice@example.com>", false},
+		{"non-hex string", "not-a-keyid", false},
+		{"too short for keyid", "DEAD", false},
+		{"keyid with whitespace", "DEAD BEEF", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.ok, IsValidRecipient(c.input))
+		})
+	}
+}
+
 func TestDefaultSettings(t *testing.T) {
 	settings := DefaultSettings()
 	assert.NotNil(t, settings)

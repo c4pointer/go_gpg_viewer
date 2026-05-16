@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"errors"
 	"fmt"
 	"os/user"
 	"path/filepath"
@@ -51,12 +52,19 @@ func ShowSettingsDialog(window fyne.Window, currentSettings *Settings, onSetting
 	form := &widget.Form{
 		Items: []*widget.FormItem{
 			{Text: "Password Store Path", Widget: passwordStoreEntry, HintText: "Path to your password store directory"},
-			{Text: "Default Recipient", Widget: defaultRecipientEntry, HintText: "Default GPG recipient for new files"},
+			{Text: "Default Recipient", Widget: defaultRecipientEntry, HintText: "Email address or hex key ID/fingerprint"},
 			{Text: "Auto-commit", Widget: autoCommitCheck, HintText: "Automatically commit changes when saving"},
 			{Text: "Notifications", Widget: notificationsCheck, HintText: "Show system notifications"},
 			{Text: "Theme", Widget: themeSelect, HintText: "Application theme (applied immediately)"},
 		},
 		OnSubmit: func() {
+			if !IsValidRecipient(defaultRecipientEntry.Text) {
+				dialog.ShowError(errors.New(
+					"default recipient must be an email address or a hex key ID/fingerprint"),
+					window)
+				return
+			}
+
 			// Update settings
 			updates := map[string]interface{}{
 				"password_store_path": passwordStoreEntry.Text,

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 )
 
 // Settings represents the application configuration
@@ -26,6 +28,29 @@ const (
 	configFileMode os.FileMode = 0600
 	configDirMode  os.FileMode = 0700
 )
+
+// recipientEmailRe matches the email form of a GPG recipient. The pattern is
+// deliberately permissive — gpg itself does the real lookup; we just want to
+// catch obvious typos like trailing spaces or accidental angle brackets.
+var recipientEmailRe = regexp.MustCompile(`^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+$`)
+
+// recipientKeyIDRe matches a short / long / fingerprint key id, optionally
+// prefixed with "0x".
+var recipientKeyIDRe = regexp.MustCompile(`^(0x)?[0-9A-Fa-f]{8,40}$`)
+
+// IsValidRecipient reports whether s looks like a plausible GPG recipient:
+// either an email address or a hex key id / fingerprint. An empty string is
+// also accepted — it just means "no default recipient configured". Returning
+// false here does not guarantee gpg will reject the value (it can still
+// accept user IDs from the keyring), but it does flag clearly-malformed
+// inputs before they are persisted.
+func IsValidRecipient(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return true
+	}
+	return recipientEmailRe.MatchString(s) || recipientKeyIDRe.MatchString(s)
+}
 
 // DefaultSettings returns the default configuration
 func DefaultSettings() *Settings {
