@@ -18,6 +18,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 	"go_gpg_viewer/assets"
 	"go_gpg_viewer/internal/gpg"
+	"go_gpg_viewer/internal/storepath"
 	scanpassstore "go_gpg_viewer/scanpassstore"
 	"go_gpg_viewer/settings"
 )
@@ -323,19 +324,18 @@ func showNewRecordDialog(window fyne.Window, targetPath string, defaultRecipient
 
 // createNewPasswordFile creates a new GPG-encrypted password file
 func createNewPasswordFile(targetPath, recordName, content, recipient string) error {
-	// Determine the file path
-	var filePath string
-	if strings.Contains(recordName, "/") {
-		// Create directory structure if needed
-		dirPath := filepath.Join(targetPath, filepath.Dir(recordName))
-		if err := os.MkdirAll(dirPath, 0755); err != nil {
+	filePath, err := storepath.ResolveRecord(targetPath, recordName)
+	if err != nil {
+		return err
+	}
+
+	// Create directory structure if needed
+	if dirPath := filepath.Dir(filePath); dirPath != "" {
+		if err := os.MkdirAll(dirPath, 0700); err != nil {
 			return fmt.Errorf("failed to create directory structure: %v", err)
 		}
-		filePath = filepath.Join(targetPath, recordName+".gpg")
-	} else {
-		filePath = filepath.Join(targetPath, recordName+".gpg")
 	}
-	
+
 	// Check if file already exists
 	if _, err := os.Stat(filePath); err == nil {
 		return fmt.Errorf("password file '%s' already exists", recordName)
