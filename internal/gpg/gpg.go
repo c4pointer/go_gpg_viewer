@@ -6,10 +6,17 @@ package gpg
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+// defaultTimeout caps the time any single gpg invocation may run. It guards
+// the UI from hanging forever on a broken pinentry, a stuck NFS mount, or
+// gpg sitting on stdin waiting for input we never send.
+const defaultTimeout = 30 * time.Second
 
 // Decrypt runs `gpg --decrypt` on filePath. If passphrase is non-empty it is
 // fed to gpg over stdin (never the argv) using --pinentry-mode loopback +
@@ -20,7 +27,9 @@ import (
 // separately so callers can surface error messages without ever exposing
 // plaintext to the UI or logs.
 func Decrypt(filePath, passphrase string) (plaintext, stderr []byte, err error) {
-	cmd := buildDecryptCmd(filePath, passphrase)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
+	defer cancel()
+	cmd := buildDecryptCmd(ctx, filePath, passphrase)
 	var stdoutBuf, stderrBuf bytes.Buffer
 	cmd.Stdout = &stdoutBuf
 	cmd.Stderr = &stderrBuf
@@ -30,11 +39,11 @@ func Decrypt(filePath, passphrase string) (plaintext, stderr []byte, err error) 
 
 // buildDecryptCmd assembles the gpg decrypt command. Exposed (unexported)
 // for testing to assert that the passphrase never lands in argv.
-func buildDecryptCmd(filePath, passphrase string) *exec.Cmd {
+func buildDecryptCmd(ctx context.Context, filePath, passphrase string) *exec.Cmd {
 	if passphrase == "" {
-		return exec.Command("gpg", "--batch", "--decrypt", filePath)
+		return exec.CommandContext(ctx, "gpg", "--batch", "--decrypt", filePath)
 	}
-	cmd := exec.Command("gpg", "--batch",
+	cmd := exec.CommandContext(ctx, "gpg", "--batch",
 		"--pinentry-mode", "loopback",
 		"--passphrase-fd", "0",
 		"--decrypt", filePath)
@@ -46,7 +55,9 @@ func buildDecryptCmd(filePath, passphrase string) *exec.Cmd {
 // gpg writes the ciphertext directly to outputFile, so the only thing
 // returned for diagnostics is stderr.
 func EncryptFile(inputFile, outputFile, recipient string) (stderr []byte, err error) {
-	cmd := exec.Command("gpg", "--batch", "--yes", "--recipient", recipient,
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gpg", "--batch", "--yes", "--recipient", recipient,
 		"--output", outputFile, "--encrypt", inputFile)
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
@@ -59,7 +70,9 @@ func EncryptFile(inputFile, outputFile, recipient string) (stderr []byte, err er
 // stderr so callers can surface errors without leaking packet metadata
 // from stdout.
 func ListRecipientKeyID(filePath string) (keyID string, stderr []byte, err error) {
-	cmd := exec.Command("gpg", "--batch", "--list-packets", filePath)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gpg", "--batch", "--list-packets", filePath)
 	var stdoutBuf, stderrBuf bytes.Buffer
 	cmd.Stdout = &stdoutBuf
 	cmd.Stderr = &stderrBuf

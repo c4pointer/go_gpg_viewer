@@ -1,6 +1,7 @@
 package gpg
 
 import (
+	"context"
 	"io"
 	"strings"
 	"testing"
@@ -11,7 +12,7 @@ import (
 
 func TestBuildDecryptCmdKeepsPassphraseOutOfArgv(t *testing.T) {
 	const secret = "hunter2-super-secret"
-	cmd := buildDecryptCmd("/tmp/file.gpg", secret)
+	cmd := buildDecryptCmd(context.Background(), "/tmp/file.gpg", secret)
 
 	for _, arg := range cmd.Args {
 		assert.NotContains(t, arg, secret,
@@ -27,7 +28,7 @@ func TestBuildDecryptCmdKeepsPassphraseOutOfArgv(t *testing.T) {
 }
 
 func TestBuildDecryptCmdNoPassphraseHasNoStdin(t *testing.T) {
-	cmd := buildDecryptCmd("/tmp/file.gpg", "")
+	cmd := buildDecryptCmd(context.Background(), "/tmp/file.gpg", "")
 	assert.Nil(t, cmd.Stdin)
 	assert.NotContains(t, strings.Join(cmd.Args, " "), "--passphrase-fd")
 	assert.NotContains(t, strings.Join(cmd.Args, " "), "loopback")
