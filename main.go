@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"io/ioutil" // Note: In Go 1.16+, this is deprecated; use io and os packages instead
 	"os"
 	"os/exec"
 	"os/user"
@@ -125,7 +124,7 @@ func decryptAndEditFile(filePath string, window fyne.Window) {
 			editedContent := contentEntry.Text
 
 			// Create a temporary file for the edited content
-			tmpFile, err := ioutil.TempFile("", "gpg_edit_*")
+			tmpFile, err := os.CreateTemp("", "gpg_edit_*")
 			if err != nil {
 				dialog.ShowError(fmt.Errorf("Failed to create temporary file: %v", err), window)
 				return
@@ -391,7 +390,7 @@ func createNewPasswordFile(targetPath, recordName, content, recipient string) er
 	}
 	
 	// Create a temporary file for the content
-	tmpFile, err := ioutil.TempFile("", "gpg_new_*")
+	tmpFile, err := os.CreateTemp("", "gpg_new_*")
 	if err != nil {
 		return fmt.Errorf("failed to create temporary file: %v", err)
 	}
@@ -988,7 +987,7 @@ func main() {
 						editedContent := contentEntry.Text
 
 						// Create a temporary file for the edited content
-						tmpFile, err := ioutil.TempFile("", "gpg_edit_*")
+						tmpFile, err := os.CreateTemp("", "gpg_edit_*")
 						if err != nil {
 							dialog.ShowError(fmt.Errorf("Failed to create temporary file: %v", err), myWindow)
 							return
