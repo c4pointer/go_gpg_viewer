@@ -417,12 +417,6 @@ func createNewPasswordFile(targetPath, recordName, content, recipient string) er
 }
 
 func main() {
-	startTime := time.Now()
-	defer func() {
-		fmt.Println("Execution time:", time.Since(startTime))
-	}()
-	fmt.Println("Starting the program...")
-
 	// Load application settings
 	appSettings, err := settings.LoadSettings()
 	if err != nil {
@@ -445,8 +439,6 @@ func main() {
 		targetPath = filepath.Join(homeDir, Target)
 	}
 
-	fmt.Println("Current user:", userCurrent.Username, "Home directory:", homeDir, "Target:", targetPath)
-
 	// Check if the target directory exists
 	if _, err := os.Stat(targetPath); os.IsNotExist(err) {
 		fmt.Println("Target directory does not exist:", targetPath)
@@ -459,10 +451,6 @@ func main() {
 		fmt.Println("Error scanning password store:", err)
 		return
 	}
-
-	fmt.Println("Valid directories with .gpg files:", len(store.Directories))
-	fmt.Println("Total root files:", len(store.RootFiles))
-	fmt.Println("CLI scan completed successfully.")
 
 	// Initialize GUI
 	myApp := app.New()
@@ -477,12 +465,6 @@ func main() {
 
 	myWindow := myApp.NewWindow("GPG Password Store Viewer")
 	myWindow.Resize(fyne.NewSize(float32(appSettings.WindowWidth), float32(appSettings.WindowHeight)))
-
-	// Handle window resize to save size to settings
-	myWindow.Canvas().SetOnTypedKey(func(ke *fyne.KeyEvent) {
-		// This is a workaround to detect window resize
-		// In a real implementation, you might want to use a timer-based approach
-	})
 
 	// Save window size when closing
 	myWindow.SetOnClosed(func() {
