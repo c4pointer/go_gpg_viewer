@@ -18,6 +18,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"go_gpg_viewer/assets"
+	"go_gpg_viewer/internal/clipboard"
 	"go_gpg_viewer/internal/gpg"
 	"go_gpg_viewer/internal/password"
 	"go_gpg_viewer/internal/storepath"
@@ -36,6 +37,29 @@ type AppState struct {
 
 // defaultRecipient is populated from settings and used to prefill recipient dialogs
 var defaultRecipient string
+
+// clipboardTTL is how long a password copied to the clipboard is allowed to
+// survive before it is auto-wiped. Long enough to paste into another app,
+// short enough that an unattended clipboard does not leak credentials.
+const clipboardTTL = 30 * time.Second
+
+// splitPasswordAndMetadata mirrors the pass(1) on-disk convention: the first
+// line of the plaintext is the password, the remaining lines are arbitrary
+// metadata (username, notes, ...). Either part may be empty.
+func splitPasswordAndMetadata(plaintext string) (password, metadata string) {
+	if i := strings.IndexByte(plaintext, '\n'); i >= 0 {
+		return plaintext[:i], plaintext[i+1:]
+	}
+	return plaintext, ""
+}
+
+// joinPasswordAndMetadata is the inverse of splitPasswordAndMetadata.
+func joinPasswordAndMetadata(password, metadata string) string {
+	if metadata == "" {
+		return password
+	}
+	return password + "\n" + metadata
+}
 
 // storePtr holds the current PasswordStore snapshot. It is updated atomically
 // by the toolbar refresh actions and read concurrently from background
@@ -103,11 +127,47 @@ func decryptAndEditFile(filePath string, window fyne.Window) {
 			}
 		}
 
-		// Stdout is now captured separately from stderr, so it contains only
-		// the actual decrypted payload — no gpg meta lines, no recipient
-		// banners. Render it directly into the editor.
-		contentEntry := widget.NewMultiLineEntry()
-		contentEntry.SetText(string(plaintext))
+		// Split into password (first line, masked) and metadata (everything
+		// else, plain). pass(1) convention.
+		pwPart, metaPart := splitPasswordAndMetadata(string(plaintext))
+
+		passwordEntry := widget.NewPasswordEntry()
+		passwordEntry.SetText(pwPart)
+
+		metadataEntry := widget.NewMultiLineEntry()
+		metadataEntry.SetText(metaPart)
+
+		copyBtn := widget.NewButtonWithIcon("Copy", theme.ContentCopyIcon(), func() {
+			app := fyne.CurrentApp()
+			if app == nil {
+				return
+			}
+			clipboard.CopyWithAutoClear(app.Clipboard(), passwordEntry.Text, clipboardTTL)
+			app.SendNotification(&fyne.Notification{
+				Title:   "Password copied",
+				Content: fmt.Sprintf("Clipboard will be cleared in %s.", clipboardTTL),
+			})
+		})
+		generateBtn := widget.NewButtonWithIcon("Generate", theme.ViewRefreshIcon(), func() {
+			pw, err := password.Generate(20, password.DefaultCharset)
+			if err != nil {
+				dialog.ShowError(fmt.Errorf("Failed to generate password: %v", err), window)
+				return
+			}
+			passwordEntry.SetText(pw)
+		})
+		passwordActions := container.NewHBox(copyBtn, generateBtn)
+		passwordRow := container.NewBorder(nil, nil, nil, passwordActions, passwordEntry)
+
+		contentBox := container.NewBorder(
+			container.NewVBox(
+				widget.NewLabel("Password:"),
+				passwordRow,
+				widget.NewLabel("Metadata:"),
+			),
+			nil, nil, nil,
+			metadataEntry,
+		)
 
 		// Create buttons first
 		var editDialog *dialog.CustomDialog
@@ -116,7 +176,7 @@ func decryptAndEditFile(filePath string, window fyne.Window) {
 			// Edited plaintext is streamed straight to gpg over stdin — never
 			// staged to a temp file — so a crash here cannot leave plaintext
 			// on disk.
-			editedContent := []byte(contentEntry.Text)
+			editedContent := []byte(joinPasswordAndMetadata(passwordEntry.Text, metadataEntry.Text))
 
 			// Get the recipient from the original file
 			recipient, gpgStderr, err := gpg.ListRecipientKeyID(filePath)
@@ -189,7 +249,7 @@ func decryptAndEditFile(filePath string, window fyne.Window) {
 
 		// Create the dialog with content and buttons
 		buttonContainer := container.NewHBox(saveBtn, closeBtn)
-		contentContainer := container.NewBorder(nil, buttonContainer, nil, nil, contentEntry)
+		contentContainer := container.NewBorder(nil, buttonContainer, nil, nil, contentBox)
 		editDialog = dialog.NewCustomWithoutButtons("Edit Password File", contentContainer, window)
 		editDialog.Resize(fyne.NewSize(600, 400))
 		editDialog.Show()

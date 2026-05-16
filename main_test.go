@@ -10,6 +10,47 @@ import (
 	"go_gpg_viewer/settings"
 )
 
+func TestSplitPasswordAndMetadata(t *testing.T) {
+	cases := []struct {
+		name      string
+		plaintext string
+		wantPw    string
+		wantMeta  string
+	}{
+		{"password only", "hunter2", "hunter2", ""},
+		{"password + metadata", "hunter2\nuser: alice", "hunter2", "user: alice"},
+		{"multi-line metadata", "hunter2\nuser: alice\nnotes: x", "hunter2", "user: alice\nnotes: x"},
+		{"empty input", "", "", ""},
+		{"only newline", "\n", "", ""},
+		{"trailing newline", "hunter2\n", "hunter2", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pw, meta := splitPasswordAndMetadata(c.plaintext)
+			assert.Equal(t, c.wantPw, pw)
+			assert.Equal(t, c.wantMeta, meta)
+		})
+	}
+}
+
+func TestJoinPasswordAndMetadataIsInverseOfSplit(t *testing.T) {
+	originals := []string{
+		"hunter2",
+		"hunter2\nuser: alice",
+		"hunter2\nuser: alice\nnotes: x",
+	}
+	for _, orig := range originals {
+		t.Run(orig, func(t *testing.T) {
+			pw, meta := splitPasswordAndMetadata(orig)
+			assert.Equal(t, orig, joinPasswordAndMetadata(pw, meta))
+		})
+	}
+}
+
+func TestJoinPasswordAndMetadataEmptyMeta(t *testing.T) {
+	assert.Equal(t, "hunter2", joinPasswordAndMetadata("hunter2", ""))
+}
+
 func TestScanPasswordStoreCLI(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "cli_scan_test")
 	require.NoError(t, err)
