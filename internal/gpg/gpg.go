@@ -5,6 +5,7 @@
 package gpg
 
 import (
+	"bytes"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -14,9 +15,17 @@ import (
 // fed to gpg over stdin (never the argv) using --pinentry-mode loopback +
 // --passphrase-fd 0, so it is not visible to other users via
 // /proc/<pid>/cmdline. An empty passphrase relies on the running gpg-agent.
-// The returned byte slice is the combined stdout+stderr output from gpg.
-func Decrypt(filePath, passphrase string) ([]byte, error) {
-	return buildDecryptCmd(filePath, passphrase).CombinedOutput()
+//
+// Returns gpg's stdout (the plaintext) and stderr (status / warnings)
+// separately so callers can surface error messages without ever exposing
+// plaintext to the UI or logs.
+func Decrypt(filePath, passphrase string) (plaintext, stderr []byte, err error) {
+	cmd := buildDecryptCmd(filePath, passphrase)
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
+	err = cmd.Run()
+	return stdoutBuf.Bytes(), stderrBuf.Bytes(), err
 }
 
 // buildDecryptCmd assembles the gpg decrypt command. Exposed (unexported)
@@ -34,23 +43,30 @@ func buildDecryptCmd(filePath, passphrase string) *exec.Cmd {
 }
 
 // EncryptFile encrypts inputFile to outputFile for the given GPG recipient.
-// The returned bytes are the combined gpg output for error reporting.
-func EncryptFile(inputFile, outputFile, recipient string) ([]byte, error) {
+// gpg writes the ciphertext directly to outputFile, so the only thing
+// returned for diagnostics is stderr.
+func EncryptFile(inputFile, outputFile, recipient string) (stderr []byte, err error) {
 	cmd := exec.Command("gpg", "--batch", "--yes", "--recipient", recipient,
 		"--output", outputFile, "--encrypt", inputFile)
-	return cmd.CombinedOutput()
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
+	err = cmd.Run()
+	return stderrBuf.Bytes(), err
 }
 
 // ListRecipientKeyID inspects an encrypted GPG file and returns the first
-// recipient key ID it can extract (16 hex chars). It also returns the raw
-// gpg output so callers can surface errors with context.
-func ListRecipientKeyID(filePath string) (keyID string, raw []byte, err error) {
+// recipient key ID it can extract (16 hex chars). It also returns gpg's
+// stderr so callers can surface errors without leaking packet metadata
+// from stdout.
+func ListRecipientKeyID(filePath string) (keyID string, stderr []byte, err error) {
 	cmd := exec.Command("gpg", "--batch", "--list-packets", filePath)
-	raw, err = cmd.CombinedOutput()
-	if err != nil {
-		return "", raw, fmt.Errorf("gpg --list-packets failed: %w", err)
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
+	if err = cmd.Run(); err != nil {
+		return "", stderrBuf.Bytes(), fmt.Errorf("gpg --list-packets failed: %w", err)
 	}
-	return parseRecipientKeyID(string(raw)), raw, nil
+	return parseRecipientKeyID(stdoutBuf.String()), stderrBuf.Bytes(), nil
 }
 
 // parseRecipientKeyID extracts the first 16-character key ID from gpg

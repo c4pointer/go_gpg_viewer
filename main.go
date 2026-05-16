@@ -39,7 +39,7 @@ func decryptAndEditFile(filePath string, window fyne.Window) {
 	// Define the decryption function inline to avoid scope issues
 	var decryptAndEdit func(string, string)
 	decryptAndEdit = func(filePath string, passphrase string) {
-		output, err := gpg.Decrypt(filePath, passphrase)
+		plaintext, gpgStderr, err := gpg.Decrypt(filePath, passphrase)
 		if err != nil {
 			// If this was a first attempt without passphrase, prompt for passphrase
 			if passphrase == "" {
@@ -77,16 +77,18 @@ func decryptAndEditFile(filePath string, window fyne.Window) {
 				})
 				return
 			} else {
-				// This was already a passphrase attempt, show error
+				// This was already a passphrase attempt, show error.
+				// Only stderr is surfaced — stdout may contain partial
+				// plaintext and must never reach the UI.
 				fyne.Do(func() {
-					dialog.ShowError(fmt.Errorf("Failed to decrypt file: %v\n%s", err, output), window)
+					dialog.ShowError(fmt.Errorf("Failed to decrypt file: %v\n%s", err, gpgStderr), window)
 				})
 				return
 			}
 		}
 
 		// Filter out GPG header information
-		lines := strings.Split(string(output), "\n")
+		lines := strings.Split(string(plaintext), "\n")
 		var contentLines []string
 		for _, line := range lines {
 			// Skip lines that contain GPG header information
@@ -130,9 +132,9 @@ func decryptAndEditFile(filePath string, window fyne.Window) {
 			tmpFile.Close()
 
 			// Get the recipient from the original file
-			recipient, recipientOutput, err := gpg.ListRecipientKeyID(filePath)
+			recipient, gpgStderr, err := gpg.ListRecipientKeyID(filePath)
 			if err != nil {
-				dialog.ShowError(fmt.Errorf("Failed to get recipient info: %v\n%s", err, recipientOutput), window)
+				dialog.ShowError(fmt.Errorf("Failed to get recipient info: %v\n%s", err, gpgStderr), window)
 				return
 			}
 
@@ -162,12 +164,12 @@ func decryptAndEditFile(filePath string, window fyne.Window) {
 							}
 
 							// Now encrypt with the provided recipient
-							output, err := gpg.EncryptFile(tmpFileName, filePath, recipient)
+							gpgStderr, err := gpg.EncryptFile(tmpFileName, filePath, recipient)
 							// Clean up the temporary file
 							os.Remove(tmpFileName)
 
 							if err != nil {
-								dialog.ShowError(fmt.Errorf("Failed to encrypt file: %v\n%s", err, output), window)
+								dialog.ShowError(fmt.Errorf("Failed to encrypt file: %v\n%s", err, gpgStderr), window)
 								return
 							}
 
@@ -182,12 +184,12 @@ func decryptAndEditFile(filePath string, window fyne.Window) {
 				recipientDialog.Show()
 			} else {
 				// Encrypt the edited content with the detected recipient
-				output, err := gpg.EncryptFile(tmpFileName, filePath, recipient)
+				gpgStderr, err := gpg.EncryptFile(tmpFileName, filePath, recipient)
 				// Clean up the temporary file
 				os.Remove(tmpFileName)
 
 				if err != nil {
-					dialog.ShowError(fmt.Errorf("Failed to encrypt file: %v\n%s", err, output), window)
+					dialog.ShowError(fmt.Errorf("Failed to encrypt file: %v\n%s", err, gpgStderr), window)
 					return
 				}
 
@@ -370,9 +372,9 @@ func createNewPasswordFile(targetPath, recordName, content, recipient string) er
 	tmpFile.Close()
 	
 	// Encrypt the file using GPG
-	output, err := gpg.EncryptFile(tmpFileName, filePath, recipient)
+	gpgStderr, err := gpg.EncryptFile(tmpFileName, filePath, recipient)
 	if err != nil {
-		return fmt.Errorf("failed to encrypt file: %v\n%s", err, output)
+		return fmt.Errorf("failed to encrypt file: %v\n%s", err, gpgStderr)
 	}
 	
 	return nil
