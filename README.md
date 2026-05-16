@@ -2,7 +2,7 @@
 
 A modern, cross-platform GUI application for browsing and managing password-store entries with GPG encryption support. Built with Go and Fyne framework.
 
-![GPG Password Store Viewer](https://img.shields.io/badge/Go-1.24.4+-blue.svg)
+![GPG Password Store Viewer](https://img.shields.io/badge/Go-1.26+-blue.svg)
 ![Fyne](https://img.shields.io/badge/Fyne-2.6.1+-green.svg)
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
 
@@ -41,7 +41,7 @@ make uninstall       # for system-wide installation
 ### System Requirements
 
 - **Operating System**: Linux (tested on RHEL 9, Ubuntu, Debian)
-- **Go Version**: 1.24.4 or higher
+- **Go Version**: 1.26 or higher
 - **GPG**: GnuPG installed and configured
 - **Git**: For repository synchronization (optional)
 
