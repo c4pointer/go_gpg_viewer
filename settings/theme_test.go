@@ -78,17 +78,25 @@ func TestApplyTheme(t *testing.T) {
 	settings.AssertCalled(t, "SetTheme", mock.Anything)
 
 	settings.On("SetTheme", mock.Anything).Return().Once()
+	ApplyTheme(app, "system")
+	settings.AssertCalled(t, "SetTheme", mock.Anything)
+
+	settings.On("SetTheme", mock.Anything).Return().Once()
 	ApplyTheme(app, "unknown")
 	settings.AssertCalled(t, "SetTheme", mock.Anything)
 }
 
 func TestGetAvailableThemes(t *testing.T) {
 	themes := GetAvailableThemes()
-	assert.ElementsMatch(t, []string{"light", "dark"}, themes)
+	assert.ElementsMatch(t, []string{"system", "light", "dark"}, themes)
+	// system must come first so the settings dialog presents it as the
+	// recommended default.
+	assert.Equal(t, "system", themes[0])
 }
 
 func TestGetThemeDisplayName(t *testing.T) {
 	assert.Equal(t, "Dark Theme", GetThemeDisplayName("dark"))
 	assert.Equal(t, "Light Theme", GetThemeDisplayName("light"))
+	assert.Equal(t, "System (Auto)", GetThemeDisplayName("system"))
 	assert.Equal(t, "Light Theme", GetThemeDisplayName("unknown"))
 }
