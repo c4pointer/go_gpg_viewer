@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strings"
@@ -19,6 +18,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 	"go_gpg_viewer/assets"
 	"go_gpg_viewer/internal/clipboard"
+	"go_gpg_viewer/internal/gitsync"
 	"go_gpg_viewer/internal/gpg"
 	"go_gpg_viewer/internal/password"
 	"go_gpg_viewer/internal/storepath"
@@ -767,12 +767,12 @@ func main() {
 				})
 
 				// Check if there are any changes to commit
-				statusOutput, statusErr := runGit(targetPath, "status", "--porcelain")
+				hasChanges, statusErr := gitsync.HasChanges(targetPath)
 				if statusErr != nil {
 					showGitError(progressDialog, statusErr)
 					return
 				}
-				if strings.TrimSpace(statusOutput) == "" {
+				if !hasChanges {
 					fyne.Do(func() {
 						fyne.CurrentApp().SendNotification(&fyne.Notification{
 							Title:   "No Changes",
@@ -789,9 +789,7 @@ func main() {
 
 				// Commit with timestamp
 				commitMsg := fmt.Sprintf("Manual commit: %s", time.Now().Format("2006-01-02 15:04:05"))
-				if err := commitAll(targetPath, commitMsg, func(v float64) {
-					fyne.Do(func() { progressBar.SetValue(v) })
-				}); err != nil {
+				if err := gitsync.CommitAll(targetPath, commitMsg); err != nil {
 					showGitError(progressDialog, err)
 					return
 				}
@@ -807,8 +805,9 @@ func main() {
 			}()
 		}),
 		widget.NewToolbarSeparator(),
-		widget.NewToolbarAction(theme.DownloadIcon(), func() {
-			// Git sync functionality
+		widget.NewToolbarAction(assets.SyncIcon(), func() {
+			// Smart git sync: commits local changes, then pulls and/or pushes
+			// only what the ahead/behind state against the remote requires.
 			progressBar := widget.NewProgressBar()
 			progressLabel := widget.NewLabel("Syncing with remote repository...")
 
@@ -817,66 +816,30 @@ func main() {
 			progressDialog.Show()
 
 			go func() {
-				setProgress := func(v float64) {
-					fyne.Do(func() { progressBar.SetValue(v) })
-				}
-				setProgress(0.05)
-
-				// Check if there are any changes to commit
-				statusOutput, statusErr := runGit(targetPath, "status", "--porcelain")
-				if statusErr != nil {
-					showGitError(progressDialog, statusErr)
-					return
-				}
-				hasChanges := strings.TrimSpace(statusOutput) != ""
-
-				// Local changes are committed first: `git pull --rebase`
-				// refuses to run on a dirty working tree.
-				if hasChanges {
-					setProgress(0.1)
-					commitMsg := fmt.Sprintf("Auto-commit: %s", time.Now().Format("2006-01-02 15:04:05"))
-					if err := commitAll(targetPath, commitMsg, nil); err != nil {
-						showGitError(progressDialog, err)
-						return
-					}
-				}
-
-				setProgress(0.3)
-
-				// Pull latest changes, replaying local commits on top
-				if _, err := runGit(targetPath, "pull", "--rebase"); err != nil {
-					showGitError(progressDialog, err)
-					return
-				}
-
-				setProgress(0.7)
-
-				// Push to remote
-				if _, err := runGit(targetPath, "push"); err != nil {
-					showGitError(progressDialog, err)
-					return
-				}
+				commitMsg := fmt.Sprintf("Auto-commit: %s", time.Now().Format("2006-01-02 15:04:05"))
+				res, err := gitsync.Sync(targetPath, commitMsg, func(step string, fraction float64) {
+					fyne.Do(func() {
+						progressLabel.SetText(step)
+						progressBar.SetValue(fraction)
+					})
+				})
 
 				fyne.Do(func() {
-					progressBar.SetValue(1.0)
-
-					// Refresh the store data
-					reloadStore()
-
-					// Show success notification
-					var message string
-					if hasChanges {
-						message = "Successfully committed and pushed changes to remote repository."
-					} else {
-						message = "Successfully synchronized with remote repository (no local changes)."
+					progressDialog.Hide()
+					// Local changes may have been committed before a failure,
+					// and a successful pull changes the files on disk.
+					if res.Changed() || err != nil {
+						reloadStore()
 					}
-
+					if err != nil {
+						dialog.ShowError(err, myWindow)
+						return
+					}
+					contentLabel.SetText("Git sync: " + res.Summary())
 					fyne.CurrentApp().SendNotification(&fyne.Notification{
 						Title:   "Git Sync Complete",
-						Content: message,
+						Content: res.Summary(),
 					})
-
-					progressDialog.Hide()
 				})
 			}()
 		}),
@@ -906,29 +869,4 @@ func main() {
 
 	myWindow.SetContent(mainContainer)
 	myWindow.ShowAndRun()
-}
-
-// runGit runs git with args inside dir. On failure git's combined output is
-// folded into the error so the cause is visible in the UI.
-func runGit(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return string(output), fmt.Errorf("git %s failed: %v\n%s", args[0], err, strings.TrimSpace(string(output)))
-	}
-	return string(output), nil
-}
-
-// commitAll stages every change in the repository at dir and commits it
-// with message. progress, if non-nil, is called between the two steps.
-func commitAll(dir, message string, progress func(float64)) error {
-	if _, err := runGit(dir, "add", "-A"); err != nil {
-		return err
-	}
-	if progress != nil {
-		progress(0.8)
-	}
-	_, err := runGit(dir, "commit", "-m", message)
-	return err
 }

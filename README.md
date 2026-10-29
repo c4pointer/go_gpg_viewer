@@ -342,7 +342,10 @@ gpg_viewer
    - Use the toolbar buttons for Git operations:
      - 🔄 **Refresh**: Reload the password store
      - 💾 **Commit**: Commit changes to Git
-     - 🔄 **Sync**: Commit local changes, pull (rebase) and push to the remote repository
+     - 🔃 **Sync**: Commits local changes, fetches, then pulls and/or pushes only
+       what the branch's ahead/behind state requires. A branch without an
+       upstream is published to `origin`. On a conflict the pull is undone,
+       and sync refuses to run while a rebase or merge is unfinished
 
 4. **Settings**
    - Click the settings icon (⚙️) to configure:
