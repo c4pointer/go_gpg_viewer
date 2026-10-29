@@ -86,13 +86,13 @@ func TestScanPasswordStore(t *testing.T) {
 	// Verify all paths mapping. Non-root entries are keyed by their full
 	// relative path to avoid base-name collisions across directories.
 	expectedPaths := map[string]string{
-		"root1": filepath.Join(tempDir, "root1.gpg"),
-		"root2": filepath.Join(tempDir, "root2.gpg"),
-		filepath.Join("dir1", "file1"):                       filepath.Join(tempDir, "dir1", "file1.gpg"),
-		filepath.Join("dir1", "file2"):                       filepath.Join(tempDir, "dir1", "file2.gpg"),
-		filepath.Join("dir2", "file3"):                       filepath.Join(tempDir, "dir2", "file3.gpg"),
-		filepath.Join("dir1", "subdir1", "subfile1"):         filepath.Join(tempDir, "dir1", "subdir1", "subfile1.gpg"),
-		filepath.Join("dir2", "subdir2", "subfile2"):         filepath.Join(tempDir, "dir2", "subdir2", "subfile2.gpg"),
+		"root1":                        filepath.Join(tempDir, "root1.gpg"),
+		"root2":                        filepath.Join(tempDir, "root2.gpg"),
+		filepath.Join("dir1", "file1"): filepath.Join(tempDir, "dir1", "file1.gpg"),
+		filepath.Join("dir1", "file2"): filepath.Join(tempDir, "dir1", "file2.gpg"),
+		filepath.Join("dir2", "file3"): filepath.Join(tempDir, "dir2", "file3.gpg"),
+		filepath.Join("dir1", "subdir1", "subfile1"):             filepath.Join(tempDir, "dir1", "subdir1", "subfile1.gpg"),
+		filepath.Join("dir2", "subdir2", "subfile2"):             filepath.Join(tempDir, "dir2", "subdir2", "subfile2.gpg"),
 		filepath.Join("dir2", "subdir2", "nested", "nestedfile"): filepath.Join(tempDir, "dir2", "subdir2", "nested", "nestedfile.gpg"),
 	}
 
@@ -315,4 +315,25 @@ func BenchmarkScanPasswordStore(b *testing.B) {
 		_, err := ScanPasswordStore(tempDir)
 		require.NoError(b, err)
 	}
+}
+
+func TestScanPasswordStoreSkipsHiddenDirectories(t *testing.T) {
+	tempDir := t.TempDir()
+	for _, p := range []string{
+		filepath.Join(tempDir, ".git", "objects", "leak.gpg"),
+		filepath.Join(tempDir, "Mail", ".cache", "stale.gpg"),
+		filepath.Join(tempDir, "Mail", "gmail.gpg"),
+	} {
+		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0700))
+		require.NoError(t, os.WriteFile(p, []byte("x"), 0600))
+	}
+
+	store, err := ScanPasswordStore(tempDir)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"Mail"}, store.Directories)
+	assert.Empty(t, store.NestedDirs["Mail"])
+	assert.Equal(t, map[string]string{
+		filepath.Join("Mail", "gmail"): filepath.Join(tempDir, "Mail", "gmail.gpg"),
+	}, store.AllPaths)
 }

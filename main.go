@@ -26,13 +26,12 @@ import (
 	"go_gpg_viewer/settings"
 )
 
-// Structure to hold password store data
-
-// Structure to hold application state
+// AppState holds the UI state shared by the tree, the record list and the
+// search box. It is only touched on the Fyne thread.
 type AppState struct {
-	SelectedDirectory string
-	SearchActive      bool
-	SearchResults     []string // relative paths without .gpg, e.g., "Finance/bank"
+	SelectedNode string   // tree node ID whose records the list shows
+	SearchQuery  string   // trimmed, lowercased search text; empty when not searching
+	ListItems    []string // records shown in the list: paths relative to the store root, without .gpg
 }
 
 // defaultRecipient is populated from settings and used to prefill recipient dialogs
@@ -74,189 +73,285 @@ func currentStore() *scanpassstore.PasswordStore {
 	return storePtr.Load()
 }
 
-// decryptAndEditFile handles the decryption and editing of a GPG file
-func decryptAndEditFile(filePath string, window fyne.Window) {
-	// Define the decryption function inline to avoid scope issues
-	var decryptAndEdit func(string, string)
-	decryptAndEdit = func(filePath string, passphrase string) {
+// openingRecord is set while a record is being decrypted so that a quick
+// double click does not stack two editor dialogs on top of each other. Once
+// a dialog is on screen it is modal and blocks further clicks by itself.
+var openingRecord atomic.Bool
+
+// decryptAndEditFile decrypts the record recordName (relative to storeRoot,
+// without the .gpg extension) and opens it in the editor dialog. It blocks on
+// gpg, so call it from a goroutine. onChanged runs on the Fyne thread after
+// the record was saved or renamed.
+func decryptAndEditFile(storeRoot, recordName string, window fyne.Window, onChanged func()) {
+	if !openingRecord.CompareAndSwap(false, true) {
+		return
+	}
+	filePath := filepath.Join(storeRoot, recordName+".gpg")
+
+	var decryptAndEdit func(passphrase string)
+	decryptAndEdit = func(passphrase string) {
 		plaintext, gpgStderr, err := gpg.Decrypt(filePath, passphrase)
 		if err != nil {
 			// If this was a first attempt without passphrase, prompt for passphrase
 			if passphrase == "" {
-				// Show passphrase dialog
 				fyne.Do(func() {
+					defer openingRecord.Store(false)
 					passphraseEntry := widget.NewPasswordEntry()
-					fileName := filepath.Base(filePath)
 
 					passphraseDialog := dialog.NewCustomConfirm(
 						"Enter Passphrase",
 						"Decrypt",
 						"Cancel",
 						container.NewVBox(
-							widget.NewLabel(fmt.Sprintf("File: %s", strings.TrimSuffix(fileName, ".gpg"))),
+							widget.NewLabel(fmt.Sprintf("File: %s", recordName)),
 							widget.NewLabel("GPG agent requires passphrase. Please enter:"),
 							passphraseEntry,
 						),
 						func(decrypt bool) {
-							if decrypt {
-								newPassphrase := passphraseEntry.Text
-								if newPassphrase == "" {
-									dialog.ShowError(errors.New("Passphrase cannot be empty"), window)
-									return
-								}
-
-								// Try again with the provided passphrase
-								go func() {
-									decryptAndEdit(filePath, newPassphrase)
-								}()
+							if !decrypt {
+								return
 							}
+							newPassphrase := passphraseEntry.Text
+							if newPassphrase == "" {
+								dialog.ShowError(errors.New("Passphrase cannot be empty"), window)
+								return
+							}
+							// Try again with the provided passphrase
+							openingRecord.Store(true)
+							go decryptAndEdit(newPassphrase)
 						},
 						window,
 					)
 					passphraseDialog.Show()
 				})
 				return
-			} else {
-				// This was already a passphrase attempt, show error.
-				// Only stderr is surfaced — stdout may contain partial
-				// plaintext and must never reach the UI.
-				fyne.Do(func() {
-					dialog.ShowError(fmt.Errorf("Failed to decrypt file: %v\n%s", err, gpgStderr), window)
-				})
+			}
+			// This was already a passphrase attempt, show error.
+			// Only stderr is surfaced — stdout may contain partial
+			// plaintext and must never reach the UI.
+			fyne.Do(func() {
+				defer openingRecord.Store(false)
+				dialog.ShowError(fmt.Errorf("Failed to decrypt file: %v\n%s", err, gpgStderr), window)
+			})
+			return
+		}
+
+		// Widgets may only be built and shown on the Fyne thread.
+		fyne.Do(func() {
+			defer openingRecord.Store(false)
+			showRecordEditor(storeRoot, recordName, string(plaintext), window, onChanged)
+		})
+	}
+
+	// Start the decryption process
+	decryptAndEdit("")
+}
+
+// showRecordEditor shows the dialog to edit a decrypted record: its name
+// (renaming moves the file inside the store), password and metadata. Must
+// run on the Fyne thread.
+func showRecordEditor(storeRoot, recordName, plaintext string, window fyne.Window, onChanged func()) {
+	oldPath, err := storepath.ResolveRecord(storeRoot, recordName)
+	if err != nil {
+		dialog.ShowError(err, window)
+		return
+	}
+
+	// Split into password (first line, masked) and metadata (everything
+	// else, plain). pass(1) convention.
+	pwPart, metaPart := splitPasswordAndMetadata(plaintext)
+	originalContent := joinPasswordAndMetadata(pwPart, metaPart)
+
+	nameEntry := widget.NewEntry()
+	nameEntry.SetText(recordName)
+	nameEntry.SetPlaceHolder("Record name (e.g., gmail.com, bank/chase)")
+
+	passwordEntry := widget.NewPasswordEntry()
+	passwordEntry.SetText(pwPart)
+
+	metadataEntry := widget.NewMultiLineEntry()
+	metadataEntry.SetText(metaPart)
+
+	copyBtn := widget.NewButtonWithIcon("Copy", theme.ContentCopyIcon(), func() {
+		app := fyne.CurrentApp()
+		if app == nil {
+			return
+		}
+		clipboard.CopyWithAutoClear(app.Clipboard(), passwordEntry.Text, clipboardTTL)
+		app.SendNotification(&fyne.Notification{
+			Title:   "Password copied",
+			Content: fmt.Sprintf("Clipboard will be cleared in %s.", clipboardTTL),
+		})
+	})
+	generateBtn := widget.NewButtonWithIcon("Generate", theme.ViewRefreshIcon(), func() {
+		pw, err := password.Generate(20, password.DefaultCharset)
+		if err != nil {
+			dialog.ShowError(fmt.Errorf("Failed to generate password: %v", err), window)
+			return
+		}
+		passwordEntry.SetText(pw)
+	})
+	passwordActions := container.NewHBox(copyBtn, generateBtn)
+	passwordRow := container.NewBorder(nil, nil, nil, passwordActions, passwordEntry)
+
+	contentBox := container.NewBorder(
+		container.NewVBox(
+			widget.NewLabel("Name:"),
+			nameEntry,
+			widget.NewLabel("Password:"),
+			passwordRow,
+			widget.NewLabel("Metadata:"),
+		),
+		nil, nil, nil,
+		metadataEntry,
+	)
+
+	var editDialog *dialog.CustomDialog
+
+	// finish closes the editor, reports success and lets the caller rescan
+	// the store so a renamed record shows up under its new name.
+	finish := func(message string) {
+		editDialog.Hide()
+		dialog.ShowInformation("Success", message, window)
+		if onChanged != nil {
+			onChanged()
+		}
+	}
+
+	saveBtn := widget.NewButtonWithIcon("Save Changes", theme.DocumentSaveIcon(), func() {
+		newName := strings.Trim(strings.TrimSpace(nameEntry.Text), "/")
+		newPath, err := storepath.ResolveRecord(storeRoot, newName)
+		if err != nil {
+			dialog.ShowError(err, window)
+			return
+		}
+		renamed := newPath != oldPath
+		if renamed {
+			if _, err := os.Stat(newPath); err == nil {
+				dialog.ShowError(fmt.Errorf("Password file '%s' already exists", newName), window)
 				return
 			}
 		}
 
-		// Split into password (first line, masked) and metadata (everything
-		// else, plain). pass(1) convention.
-		pwPart, metaPart := splitPasswordAndMetadata(string(plaintext))
-
-		passwordEntry := widget.NewPasswordEntry()
-		passwordEntry.SetText(pwPart)
-
-		metadataEntry := widget.NewMultiLineEntry()
-		metadataEntry.SetText(metaPart)
-
-		copyBtn := widget.NewButtonWithIcon("Copy", theme.ContentCopyIcon(), func() {
-			app := fyne.CurrentApp()
-			if app == nil {
+		editedContent := joinPasswordAndMetadata(passwordEntry.Text, metadataEntry.Text)
+		if editedContent == originalContent {
+			if !renamed {
+				editDialog.Hide()
 				return
 			}
-			clipboard.CopyWithAutoClear(app.Clipboard(), passwordEntry.Text, clipboardTTL)
-			app.SendNotification(&fyne.Notification{
-				Title:   "Password copied",
-				Content: fmt.Sprintf("Clipboard will be cleared in %s.", clipboardTTL),
-			})
-		})
-		generateBtn := widget.NewButtonWithIcon("Generate", theme.ViewRefreshIcon(), func() {
-			pw, err := password.Generate(20, password.DefaultCharset)
+			// Only the name changed: move the ciphertext untouched instead
+			// of re-encrypting, so all of its recipients are kept.
+			if err := storepath.MoveRecord(storeRoot, oldPath, newPath); err != nil {
+				dialog.ShowError(err, window)
+				return
+			}
+			finish(fmt.Sprintf("Record renamed to '%s'", newName))
+			return
+		}
+
+		// Edited plaintext is streamed straight to gpg over stdin — never
+		// staged to a temp file — so a crash here cannot leave plaintext
+		// on disk.
+		encryptAndFinish := func(recipient string) {
+			gpgStderr, err := encryptRecord([]byte(editedContent), newPath, recipient)
 			if err != nil {
-				dialog.ShowError(fmt.Errorf("Failed to generate password: %v", err), window)
+				dialog.ShowError(fmt.Errorf("Failed to encrypt file: %v\n%s", err, gpgStderr), window)
 				return
 			}
-			passwordEntry.SetText(pw)
-		})
-		passwordActions := container.NewHBox(copyBtn, generateBtn)
-		passwordRow := container.NewBorder(nil, nil, nil, passwordActions, passwordEntry)
-
-		contentBox := container.NewBorder(
-			container.NewVBox(
-				widget.NewLabel("Password:"),
-				passwordRow,
-				widget.NewLabel("Metadata:"),
-			),
-			nil, nil, nil,
-			metadataEntry,
-		)
-
-		// Create buttons first
-		var editDialog *dialog.CustomDialog
-
-		saveBtn := widget.NewButtonWithIcon("Save Changes", theme.DocumentSaveIcon(), func() {
-			// Edited plaintext is streamed straight to gpg over stdin — never
-			// staged to a temp file — so a crash here cannot leave plaintext
-			// on disk.
-			editedContent := []byte(joinPasswordAndMetadata(passwordEntry.Text, metadataEntry.Text))
-
-			// Get the recipient from the original file
-			recipient, gpgStderr, err := gpg.ListRecipientKeyID(filePath)
-			if err != nil {
-				dialog.ShowError(fmt.Errorf("Failed to get recipient info: %v\n%s", err, gpgStderr), window)
-				return
-			}
-
-			if recipient == "" {
-				// If we couldn't find the recipient, ask the user
-				recipientEntry := widget.NewEntry()
-				if defaultRecipient != "" {
-					recipientEntry.SetText(defaultRecipient)
-				} else {
-					recipientEntry.SetPlaceHolder("email or key ID")
-				}
-				recipientDialog := dialog.NewCustomConfirm(
-					"Enter Recipient",
-					"Encrypt",
-					"Cancel",
-					container.NewVBox(
-						widget.NewLabel("Could not detect recipient automatically."),
-						widget.NewLabel("Please enter GPG recipient (email or key ID):"),
-						recipientEntry,
-					),
-					func(confirm bool) {
-						if confirm {
-							recipient = recipientEntry.Text
-							if recipient == "" {
-								dialog.ShowError(errors.New("Recipient cannot be empty"), window)
-								return
-							}
-
-							// Now encrypt with the provided recipient
-							gpgStderr, err := gpg.EncryptBytes(editedContent, filePath, recipient)
-							if err != nil {
-								dialog.ShowError(fmt.Errorf("Failed to encrypt file: %v\n%s", err, gpgStderr), window)
-								return
-							}
-
-							dialog.ShowInformation("Success", "File saved successfully", window)
-							if editDialog != nil {
-								editDialog.Hide()
-							}
-						}
-					},
-					window,
-				)
-				recipientDialog.Show()
-			} else {
-				// Encrypt the edited content with the detected recipient
-				gpgStderr, err := gpg.EncryptBytes(editedContent, filePath, recipient)
-				if err != nil {
-					dialog.ShowError(fmt.Errorf("Failed to encrypt file: %v\n%s", err, gpgStderr), window)
+			if renamed {
+				if err := storepath.RemoveRecord(storeRoot, oldPath); err != nil {
+					editDialog.Hide()
+					dialog.ShowError(fmt.Errorf("Saved as '%s', but the old file could not be removed: %v", newName, err), window)
+					if onChanged != nil {
+						onChanged()
+					}
 					return
 				}
+				finish(fmt.Sprintf("Record saved as '%s'", newName))
+				return
+			}
+			finish("File saved successfully")
+		}
 
-				dialog.ShowInformation("Success", "File saved successfully", window)
-				if editDialog != nil {
-					editDialog.Hide()
+		// Get the recipient from the original file
+		recipient, gpgStderr, err := gpg.ListRecipientKeyID(oldPath)
+		if err != nil {
+			dialog.ShowError(fmt.Errorf("Failed to get recipient info: %v\n%s", err, gpgStderr), window)
+			return
+		}
+		if recipient != "" {
+			encryptAndFinish(recipient)
+			return
+		}
+
+		// If we couldn't find the recipient, ask the user
+		recipientEntry := widget.NewEntry()
+		if defaultRecipient != "" {
+			recipientEntry.SetText(defaultRecipient)
+		} else {
+			recipientEntry.SetPlaceHolder("email or key ID")
+		}
+		recipientDialog := dialog.NewCustomConfirm(
+			"Enter Recipient",
+			"Encrypt",
+			"Cancel",
+			container.NewVBox(
+				widget.NewLabel("Could not detect recipient automatically."),
+				widget.NewLabel("Please enter GPG recipient (email or key ID):"),
+				recipientEntry,
+			),
+			func(confirm bool) {
+				if !confirm {
+					return
 				}
-			}
-		})
+				recipient := strings.TrimSpace(recipientEntry.Text)
+				if recipient == "" {
+					dialog.ShowError(errors.New("Recipient cannot be empty"), window)
+					return
+				}
+				encryptAndFinish(recipient)
+			},
+			window,
+		)
+		recipientDialog.Show()
+	})
 
-		closeBtn := widget.NewButtonWithIcon("Close", theme.CancelIcon(), func() {
-			if editDialog != nil {
-				editDialog.Hide()
-			}
-		})
+	closeBtn := widget.NewButtonWithIcon("Close", theme.CancelIcon(), func() {
+		editDialog.Hide()
+	})
 
-		// Create the dialog with content and buttons
-		buttonContainer := container.NewHBox(saveBtn, closeBtn)
-		contentContainer := container.NewBorder(nil, buttonContainer, nil, nil, contentBox)
-		editDialog = dialog.NewCustomWithoutButtons("Edit Password File", contentContainer, window)
-		editDialog.Resize(fyne.NewSize(600, 400))
-		editDialog.Show()
+	// Create the dialog with content and buttons
+	buttonContainer := container.NewHBox(saveBtn, closeBtn)
+	contentContainer := container.NewBorder(nil, buttonContainer, nil, nil, contentBox)
+	editDialog = dialog.NewCustomWithoutButtons("Edit Password File", contentContainer, window)
+	editDialog.Resize(fyne.NewSize(600, 450))
+	editDialog.Show()
+}
+
+// encryptRecord encrypts plaintext for recipient into the record file dest.
+// gpg writes to a sibling temp file that is renamed over dest only on
+// success, so a failed or killed gpg can never truncate an existing record.
+// The temp file only ever holds ciphertext.
+func encryptRecord(plaintext []byte, dest, recipient string) (stderr []byte, err error) {
+	dir := filepath.Dir(dest)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return nil, fmt.Errorf("failed to create directory structure: %v", err)
 	}
+	tmp, err := os.CreateTemp(dir, ".gpg-viewer-*.tmp")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp file: %v", err)
+	}
+	tmpPath := tmp.Name()
+	tmp.Close()
+	defer os.Remove(tmpPath) // no-op once renamed
 
-	// Start the decryption process
-	decryptAndEdit(filePath, "")
+	if stderr, err := gpg.EncryptBytes(plaintext, tmpPath, recipient); err != nil {
+		return stderr, err
+	}
+	if err := os.Rename(tmpPath, dest); err != nil {
+		return nil, fmt.Errorf("failed to replace record: %v", err)
+	}
+	return nil, nil
 }
 
 // showNewRecordDialog displays a dialog for creating a new password record
@@ -264,10 +359,10 @@ func showNewRecordDialog(window fyne.Window, targetPath string, defaultRecipient
 	// Create form entries
 	nameEntry := widget.NewEntry()
 	nameEntry.SetPlaceHolder("Enter record name (e.g., gmail.com, bank/chase)")
-	
+
 	usernameEntry := widget.NewEntry()
 	usernameEntry.SetPlaceHolder("Enter username/email")
-	
+
 	passwordEntry := widget.NewPasswordEntry()
 	passwordEntry.SetPlaceHolder("Enter password")
 
@@ -286,35 +381,35 @@ func showNewRecordDialog(window fyne.Window, targetPath string, defaultRecipient
 	notesEntry := widget.NewMultiLineEntry()
 	notesEntry.SetPlaceHolder("Additional notes (optional)")
 	notesEntry.Resize(fyne.NewSize(400, 100))
-	
+
 	recipientEntry := widget.NewEntry()
 	if defaultRecipient != "" {
 		recipientEntry.SetText(defaultRecipient)
 	} else {
 		recipientEntry.SetPlaceHolder("GPG recipient (email or key ID)")
 	}
-	
+
 	// Create form content
 	formContent := container.NewVBox(
 		widget.NewLabel("Create New Password Record"),
 		widget.NewSeparator(),
-		
+
 		widget.NewLabel("Record Name:"),
 		nameEntry,
-		
+
 		widget.NewLabel("Username:"),
 		usernameEntry,
-		
+
 		widget.NewLabel("Password:"),
 		passwordRow,
-		
+
 		widget.NewLabel("Notes:"),
 		notesEntry,
-		
+
 		widget.NewLabel("GPG Recipient:"),
 		recipientEntry,
 	)
-	
+
 	// Create dialog
 	newRecordDialog := dialog.NewCustomConfirm(
 		"New Password Record",
@@ -325,34 +420,34 @@ func showNewRecordDialog(window fyne.Window, targetPath string, defaultRecipient
 			if !create {
 				return
 			}
-			
+
 			// Validate inputs
 			recordName := strings.TrimSpace(nameEntry.Text)
 			username := strings.TrimSpace(usernameEntry.Text)
-			password := strings.TrimSpace(passwordEntry.Text)
+			password := passwordEntry.Text
 			notes := strings.TrimSpace(notesEntry.Text)
 			recipient := strings.TrimSpace(recipientEntry.Text)
-			
+
 			if recordName == "" {
 				dialog.ShowError(errors.New("Record name cannot be empty"), window)
 				return
 			}
-			
+
 			if username == "" {
 				dialog.ShowError(errors.New("Username cannot be empty"), window)
 				return
 			}
-			
-			if password == "" {
+
+			if strings.TrimSpace(password) == "" {
 				dialog.ShowError(errors.New("Password cannot be empty"), window)
 				return
 			}
-			
+
 			if recipient == "" {
 				dialog.ShowError(errors.New("GPG recipient cannot be empty"), window)
 				return
 			}
-			
+
 			// Create password content
 			var content strings.Builder
 			content.WriteString(password)
@@ -362,7 +457,7 @@ func showNewRecordDialog(window fyne.Window, targetPath string, defaultRecipient
 				content.WriteString("\n")
 				content.WriteString("Notes: " + notes)
 			}
-			
+
 			// Create the GPG file
 			go func() {
 				err := createNewPasswordFile(targetPath, recordName, content.String(), recipient)
@@ -372,7 +467,7 @@ func showNewRecordDialog(window fyne.Window, targetPath string, defaultRecipient
 					})
 					return
 				}
-				
+
 				// Success - refresh the UI
 				fyne.Do(func() {
 					dialog.ShowInformation("Success", fmt.Sprintf("Password record '%s' created successfully", recordName), window)
@@ -384,7 +479,7 @@ func showNewRecordDialog(window fyne.Window, targetPath string, defaultRecipient
 		},
 		window,
 	)
-	
+
 	newRecordDialog.Resize(fyne.NewSize(500, 600))
 	newRecordDialog.Show()
 }
@@ -396,13 +491,6 @@ func createNewPasswordFile(targetPath, recordName, content, recipient string) er
 		return err
 	}
 
-	// Create directory structure if needed
-	if dirPath := filepath.Dir(filePath); dirPath != "" {
-		if err := os.MkdirAll(dirPath, 0700); err != nil {
-			return fmt.Errorf("failed to create directory structure: %v", err)
-		}
-	}
-
 	// Check if file already exists
 	if _, err := os.Stat(filePath); err == nil {
 		return fmt.Errorf("password file '%s' already exists", recordName)
@@ -410,7 +498,7 @@ func createNewPasswordFile(targetPath, recordName, content, recipient string) er
 
 	// Encrypt the content directly through stdin so the plaintext is never
 	// written to disk in the clear.
-	gpgStderr, err := gpg.EncryptBytes([]byte(content), filePath, recipient)
+	gpgStderr, err := encryptRecord([]byte(content), filePath, recipient)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt file: %v\n%s", err, gpgStderr)
 	}
@@ -479,196 +567,20 @@ func main() {
 	})
 
 	// Create application state
-	appState := &AppState{
-		SelectedDirectory: "",
-	}
+	appState := &AppState{}
 
-	// Create tree for directories with nested support
+	// The tree is rebuilt from the current store snapshot on every refresh;
+	// node IDs are full relative paths (see storetree.go).
 	tree := widget.NewTree(
 		func(id widget.TreeNodeID) []widget.TreeNodeID {
-			if id == "" {
-				// Root level items
-				if len(currentStore().RootFiles) > 0 {
-					return []widget.TreeNodeID{"Root", "Directories"}
-				}
-				return []widget.TreeNodeID{"Directories"}
-			} else if id == "Root" {
-				// Root files - show them as child nodes
-				return currentStore().RootFiles
-			} else if id == "Directories" {
-				// Directory names
-				return currentStore().Directories
-			} else if files, ok := currentStore().DirContents[id]; ok {
-				// Files in a directory - show them as child nodes
-				var children []widget.TreeNodeID
-				children = append(children, files...)
-
-				// Add subdirectories if they exist
-				if subdirs, ok := currentStore().NestedDirs[id]; ok {
-					children = append(children, subdirs...)
-				}
-				return children
-			} else {
-				// Check if this is a root file (no parent directory)
-				for _, rootFile := range currentStore().RootFiles {
-					if rootFile == id {
-						return []widget.TreeNodeID{} // Root files are leaf nodes
-					}
-				}
-
-				// Check if this is a subdirectory path (e.g., "Finance/subfolder1")
-				// We need to check if this ID exists as a full path in DirContents
-				if files, ok := currentStore().DirContents[id]; ok {
-					var children []widget.TreeNodeID
-					children = append(children, files...)
-
-					// Add nested subdirectories if they exist
-					if subdirs, ok := currentStore().NestedDirs[id]; ok {
-						children = append(children, subdirs...)
-					}
-					return children
-				}
-
-				// Check if this is a subdirectory name that should be expanded
-				// First, find which parent directory this subdirectory belongs to
-				var parentDir string
-				for parent, subdirs := range currentStore().NestedDirs {
-					for _, subdir := range subdirs {
-						if subdir == id {
-							parentDir = parent
-							break
-						}
-					}
-					if parentDir != "" {
-						break
-					}
-				}
-
-				// If we found the parent, construct the full path and get the contents
-				if parentDir != "" {
-					fullPath := parentDir + "/" + id
-					if files, ok := currentStore().DirContents[fullPath]; ok {
-						return files
-					}
-				}
-
-				// Fallback: Look for entries in DirContents that start with this ID + "/"
-				var children []widget.TreeNodeID
-				for fullPath := range currentStore().DirContents {
-					if strings.HasPrefix(fullPath, id+"/") {
-						// Extract the subdirectory name
-						parts := strings.Split(fullPath, "/")
-						if len(parts) > 1 {
-							subdirName := parts[1] // Get the part after the first "/"
-							children = append(children, subdirName)
-						}
-					}
-				}
-				if len(children) > 0 {
-					return children
-				}
-			}
-			return []widget.TreeNodeID{}
+			return nodeChildren(currentStore(), id)
 		},
-		func(id widget.TreeNodeID) bool {
-			if id == "" || id == "Directories" {
-				return true
-			} else if id == "Root" && len(currentStore().RootFiles) > 0 {
-				return true
-			} else if _, ok := currentStore().NestedDirs[id]; ok {
-				// Subdirectories are expandable if they have files or subdirectories
-				return true
-			} else if _, ok := currentStore().DirContents[id]; ok {
-				// Directories are expandable if they have files or subdirectories
-				return true
-			} else {
-				// Check if this is a subdirectory by looking for entries that start with parent + "/"
-				for fullPath := range currentStore().DirContents {
-					if strings.HasPrefix(fullPath, id+"/") {
-						return true
-					}
-				}
-
-				// Check if this is a subdirectory name that appears in any parent's NestedDirs
-				for _, subdirs := range currentStore().NestedDirs {
-					for _, subdir := range subdirs {
-						if subdir == id {
-							return true
-						}
-					}
-				}
-			}
-			// Files are not expandable
-			return false
-		},
+		nodeIsBranch,
 		func(branch bool) fyne.CanvasObject {
 			return widget.NewLabel("Template")
 		},
 		func(id widget.TreeNodeID, branch bool, o fyne.CanvasObject) {
-			label := o.(*widget.Label)
-			switch id {
-			case "":
-				label.SetText("Password Store")
-			case "Root":
-				label.SetText("Root Files")
-			case "Directories":
-				label.SetText("Directories")
-			default:
-				// Check if this is a directory, subdirectory, or file
-				// First check if it's a subdirectory (in NestedDirs)
-				if _, ok := currentStore().NestedDirs[id]; ok {
-					// It's a subdirectory
-					dirName := id
-					if strings.Contains(id, "/") {
-						parts := strings.Split(id, "/")
-						dirName = parts[len(parts)-1]
-					}
-					label.SetText("📂 " + dirName)
-				} else if _, ok := currentStore().DirContents[id]; ok {
-					// It's a directory (has files)
-					// Extract just the directory name from the path
-					dirName := id
-					if strings.Contains(id, "/") {
-						parts := strings.Split(id, "/")
-						dirName = parts[len(parts)-1]
-					}
-
-					// Check if it's a top-level directory or nested
-					if strings.Contains(id, "/") {
-						label.SetText("📂 " + dirName)
-					} else {
-						label.SetText("📁 " + dirName)
-					}
-				} else {
-					// Check if this is a subdirectory by looking for entries that start with parent + "/"
-					// This handles cases where we have "New" as a subdirectory of "Finance"
-					isSubdirectory := false
-					for fullPath := range currentStore().DirContents {
-						if strings.HasPrefix(fullPath, id+"/") {
-							isSubdirectory = true
-							break
-						}
-					}
-
-					if isSubdirectory {
-						label.SetText("📂 " + id)
-					} else {
-						// Check if this is a subdirectory name that appears in any parent's NestedDirs
-						// This handles cases where "New" is a subdirectory of "Finance"
-						for _, subdirs := range currentStore().NestedDirs {
-							for _, subdir := range subdirs {
-								if subdir == id {
-									label.SetText("📂 " + id)
-									return
-								}
-							}
-						}
-
-						// It's a file
-						label.SetText("📄 " + id)
-					}
-				}
-			}
+			o.(*widget.Label).SetText(nodeLabel(id))
 		},
 	)
 
@@ -676,208 +588,103 @@ func main() {
 	contentLabel := widget.NewLabel("Select an item to view details")
 	contentLabel.Wrapping = fyne.TextWrapWord
 
-	// File list for selected directory or search results
+	// File list for the selected directory or the search results. It always
+	// renders appState.ListItems, so what is shown is exactly what opens.
 	fileList := widget.NewList(
-		func() int { return 0 },
+		func() int { return len(appState.ListItems) },
 		func() fyne.CanvasObject {
 			return widget.NewLabel("Template")
 		},
 		func(id widget.ListItemID, o fyne.CanvasObject) {
-			// This will be populated when a directory is selected
+			label := o.(*widget.Label)
+			if id < 0 || id >= len(appState.ListItems) {
+				label.SetText("")
+				return
+			}
+			item := appState.ListItems[id]
+			if appState.SearchQuery == "" {
+				// Inside a directory the base name is enough; search results
+				// keep the full path so equal names stay distinguishable.
+				item = filepath.Base(item)
+			}
+			label.SetText(item)
 		},
 	)
+
+	// renderList fills the record list from the search query, or from the
+	// selected tree node when no search is active.
+	renderList := func() {
+		if appState.SearchQuery != "" {
+			appState.ListItems = searchRecords(currentStore(), appState.SearchQuery)
+			contentLabel.SetText(fmt.Sprintf("Found %d matching entries", len(appState.ListItems)))
+		} else {
+			var status string
+			appState.ListItems, status = nodeListing(currentStore(), appState.SelectedNode)
+			contentLabel.SetText(status)
+		}
+		fileList.UnselectAll()
+		fileList.Refresh()
+	}
+
+	// reloadStore rescans the password store and refreshes the tree and the
+	// list. Must run on the Fyne thread.
+	reloadStore := func() bool {
+		newStore, err := scanpassstore.ScanPasswordStore(targetPath)
+		if err != nil {
+			dialog.ShowError(err, myWindow)
+			return false
+		}
+		storePtr.Store(newStore)
+		tree.Refresh()
+		renderList()
+		return true
+	}
+
+	openRecord := func(rel string) {
+		go decryptAndEditFile(targetPath, rel, myWindow, func() { reloadStore() })
+	}
 
 	// Search entry (global search across store)
 	searchEntry := widget.NewEntry()
 	searchEntry.SetPlaceHolder("Search passwords… (name or path)")
 	searchEntry.OnChanged = func(query string) {
-		q := strings.TrimSpace(strings.ToLower(query))
-		if q == "" {
-			// Exit search mode and restore selection-driven list
-			appState.SearchActive = false
-			appState.SearchResults = nil
-			// Repopulate list from current selection
-			if appState.SelectedDirectory != "" {
-				tree.OnSelected(appState.SelectedDirectory)
-			} else {
-				fileList.Length = func() int { return 0 }
-				fileList.Refresh()
-				contentLabel.SetText("Select a directory or file to view details")
-			}
-			return
-		}
-
-		// Build list of all relative paths from store
-		// Use AllPaths to traverse; compute relative path and trim .gpg
-		var allRel []string
-		sep := string(os.PathSeparator)
-		prefix := targetPath + sep
-		for _, full := range currentStore().AllPaths {
-			rel := strings.TrimPrefix(full, prefix)
-			if strings.HasSuffix(rel, ".gpg") {
-				rel = strings.TrimSuffix(rel, ".gpg")
-			}
-			allRel = append(allRel, rel)
-		}
-
-		// Filter
-		var results []string
-		for _, rel := range allRel {
-			if strings.Contains(strings.ToLower(rel), q) {
-				results = append(results, rel)
-			}
-		}
-
-		// Update state and list
-		appState.SearchActive = true
-		appState.SearchResults = results
-		fileList.Length = func() int { return len(appState.SearchResults) }
-		fileList.UpdateItem = func(id widget.ListItemID, o fyne.CanvasObject) {
-			label := o.(*widget.Label)
-			label.SetText(appState.SearchResults[id])
-		}
-		fileList.Refresh()
-		contentLabel.SetText(fmt.Sprintf("Found %d matching entr(y/ies)", len(results)))
+		appState.SearchQuery = strings.ToLower(strings.TrimSpace(query))
+		renderList()
 	}
 
 	// Handle tree selection
 	tree.OnSelected = func(id widget.TreeNodeID) {
-		// Store the selected directory in app state
-		appState.SelectedDirectory = id
-
-		if id == "Root" {
-			// Show root files
-			fileList.Length = func() int { return len(currentStore().RootFiles) }
-			fileList.UpdateItem = func(id widget.ListItemID, o fyne.CanvasObject) {
-				label := o.(*widget.Label)
-				label.SetText(currentStore().RootFiles[id])
+		if rel, ok := recordFromNode(id); ok {
+			// A record is an action, not a lasting selection. Tree only fires
+			// OnSelected when the selection changes, so keeping the record
+			// selected would make a second click on it do nothing.
+			tree.Unselect(id)
+			if appState.SearchQuery == "" {
+				appState.SelectedNode = parentNode(rel)
+				renderList()
 			}
-			contentLabel.SetText(fmt.Sprintf("Root directory contains %d password files", len(currentStore().RootFiles)))
-		} else if files, ok := currentStore().DirContents[id]; ok {
-			// Show files in selected directory
-			fileList.Length = func() int { return len(files) }
-			fileList.UpdateItem = func(id widget.ListItemID, o fyne.CanvasObject) {
-				label := o.(*widget.Label)
-				label.SetText(files[id])
-			}
-			contentLabel.SetText(fmt.Sprintf("Directory '%s' contains %d password files", id, len(files)))
-		} else {
-			// Check if this is a file (either root file or file in directory)
-			var fileName string
-
-			// Check if it's a root file
-			for _, rootFile := range currentStore().RootFiles {
-				if rootFile == id {
-					fileName = rootFile
-					break
-				}
-			}
-
-			// If not a root file, check if it's a file in any directory
-			if fileName == "" {
-				for _, dirFiles := range currentStore().DirContents {
-					for _, dirFile := range dirFiles {
-						if dirFile == id {
-							fileName = dirFile
-							break
-						}
-					}
-					if fileName != "" {
-						break
-					}
-				}
-			}
-
-			if fileName != "" {
-				// This is a file, show it in the file list
-				fileList.Length = func() int { return 1 }
-				fileList.UpdateItem = func(id widget.ListItemID, o fyne.CanvasObject) {
-					label := o.(*widget.Label)
-					label.SetText(fileName)
-				}
-				contentLabel.SetText(fmt.Sprintf("Selected file: %s", fileName))
-
-				// Automatically select the file for editing
-				fileList.Select(0)
-
-				// Directly trigger decryption for the selected file
-				go func() {
-					// Determine the file path based on whether it's a root file or directory file
-					var filePath string
-
-					// Check if it's a root file
-					for _, rootFile := range currentStore().RootFiles {
-						if rootFile == id {
-							filePath = filepath.Join(targetPath, fileName+".gpg")
-							break
-						}
-					}
-
-					// If not a root file, locate it via DirContents and build the
-					// absolute path from the parent directory (which is the
-					// authoritative source of the relative location).
-					if filePath == "" {
-						for dirName, dirFiles := range currentStore().DirContents {
-							for _, dirFile := range dirFiles {
-								if dirFile == id {
-									filePath = filepath.Join(targetPath, dirName, fileName+".gpg")
-									break
-								}
-							}
-							if filePath != "" {
-								break
-							}
-						}
-					}
-
-					if filePath != "" {
-						// Start the decryption process
-						decryptAndEditFile(filePath, myWindow)
-					}
-				}()
-			} else {
-				// Reset file list for other selections
-				fileList.Length = func() int { return 0 }
-				contentLabel.SetText("Select a directory or file to view details")
-			}
+			openRecord(rel)
+			return
 		}
-		fileList.Refresh()
+
+		appState.SelectedNode = id
+		if appState.SearchQuery != "" {
+			// Leaving search mode re-renders the list via OnChanged.
+			searchEntry.SetText("")
+			return
+		}
+		renderList()
 	}
 
 	// Handle file selection
 	fileList.OnSelected = func(id widget.ListItemID) {
-		// If search is active, resolve selection directly by relative path
-		if appState.SearchActive {
-			if id < 0 || id >= len(appState.SearchResults) {
-				return
-			}
-			rel := appState.SearchResults[id]
-			// Build full path and open
-			filePath := filepath.Join(targetPath, rel+".gpg")
-			go decryptAndEditFile(filePath, myWindow)
+		// Same as the tree: drop the selection so the same row can be
+		// opened again right after its editor is closed.
+		fileList.Unselect(id)
+		if id < 0 || id >= len(appState.ListItems) {
 			return
 		}
-
-		selectedDir := appState.SelectedDirectory
-		var fileName string
-		var filePath string
-
-		if selectedDir == "Root" {
-			fileName = currentStore().RootFiles[id]
-			filePath = filepath.Join(targetPath, fileName+".gpg")
-		} else if files, ok := currentStore().DirContents[selectedDir]; ok && id < len(files) {
-			fileName = files[id]
-			// selectedDir already carries the full relative directory path
-			// (e.g. "Finance" or "Finance/subfolder"), so we can construct
-			// the absolute path directly without consulting AllPaths.
-			filePath = filepath.Join(targetPath, selectedDir, fileName+".gpg")
-		}
-
-		if fileName != "" {
-			// Delegate to the shared decrypt+edit pipeline used everywhere
-			// else in the app instead of inlining a second copy of it.
-			go decryptAndEditFile(filePath, myWindow)
-		}
+		openRecord(appState.ListItems[id])
 	}
 
 	// Layout the UI
@@ -904,35 +711,27 @@ func main() {
 		myWindow.Canvas().Refresh(myWindow.Content())
 	}
 
+	// showGitError reports a failed git step. Notifications are easy to miss
+	// (or disabled), so failures get a dialog.
+	showGitError := func(progressDialog *dialog.CustomDialog, err error) {
+		fyne.Do(func() {
+			progressDialog.Hide()
+			dialog.ShowError(err, myWindow)
+		})
+	}
+
 	// Add a toolbar with actions
 	toolbar := widget.NewToolbar(
 		widget.NewToolbarAction(theme.ViewRefreshIcon(), func() {
 			// Refresh the password store data
-			newStore, err := scanpassstore.ScanPasswordStore(targetPath)
-			if err != nil {
-				dialog.ShowError(err, myWindow)
-				return
+			if reloadStore() {
+				contentLabel.SetText("Password store refreshed")
 			}
-			storePtr.Store(newStore)
-			tree.Refresh()
-			fileList.Refresh()
-			contentLabel.SetText("Password store refreshed")
 		}),
 		widget.NewToolbarSeparator(),
 		widget.NewToolbarAction(theme.ContentAddIcon(), func() {
 			// Show new record creation dialog
-			showNewRecordDialog(myWindow, targetPath, defaultRecipient, func() {
-				// Refresh callback after creating new record
-				newStore, err := scanpassstore.ScanPasswordStore(targetPath)
-				if err != nil {
-					dialog.ShowError(err, myWindow)
-					return
-				}
-				storePtr.Store(newStore)
-				tree.Refresh()
-				fileList.Refresh()
-				contentLabel.SetText("Password store refreshed")
-			})
+			showNewRecordDialog(myWindow, targetPath, defaultRecipient, func() { reloadStore() })
 		}),
 		widget.NewToolbarSeparator(),
 		widget.NewToolbarAction(theme.DocumentSaveIcon(), func() {
@@ -949,19 +748,13 @@ func main() {
 					progressBar.SetValue(0.2)
 				})
 
-				gitDir := targetPath
-				execGitCommand := func(command string, args ...string) (string, error) {
-					cmd := exec.Command(command, args...)
-					cmd.Dir = gitDir
-					output, err := cmd.CombinedOutput()
-					return string(output), err
-				}
-
 				// Check if there are any changes to commit
-				statusOutput, statusErr := execGitCommand("git", "status", "--porcelain")
-				hasChanges := statusErr == nil && strings.TrimSpace(statusOutput) != ""
-
-				if !hasChanges {
+				statusOutput, statusErr := runGit(targetPath, "status", "--porcelain")
+				if statusErr != nil {
+					showGitError(progressDialog, statusErr)
+					return
+				}
+				if strings.TrimSpace(statusOutput) == "" {
 					fyne.Do(func() {
 						fyne.CurrentApp().SendNotification(&fyne.Notification{
 							Title:   "No Changes",
@@ -976,34 +769,12 @@ func main() {
 					progressBar.SetValue(0.5)
 				})
 
-				// Add all changes
-				_, addErr := execGitCommand("git", "add", ".")
-				if addErr != nil {
-					fyne.Do(func() {
-						fyne.CurrentApp().SendNotification(&fyne.Notification{
-							Title:   "Git Add Failed",
-							Content: fmt.Sprintf("Error: %v", addErr),
-						})
-						progressDialog.Hide()
-					})
-					return
-				}
-
-				fyne.Do(func() {
-					progressBar.SetValue(0.8)
-				})
-
 				// Commit with timestamp
 				commitMsg := fmt.Sprintf("Manual commit: %s", time.Now().Format("2006-01-02 15:04:05"))
-				_, commitErr := execGitCommand("git", "commit", "-m", commitMsg)
-				if commitErr != nil {
-					fyne.Do(func() {
-						fyne.CurrentApp().SendNotification(&fyne.Notification{
-							Title:   "Git Commit Failed",
-							Content: fmt.Sprintf("Error: %v", commitErr),
-						})
-						progressDialog.Hide()
-					})
+				if err := commitAll(targetPath, commitMsg, func(v float64) {
+					fyne.Do(func() { progressBar.SetValue(v) })
+				}); err != nil {
+					showGitError(progressDialog, err)
 					return
 				}
 
@@ -1028,104 +799,43 @@ func main() {
 			progressDialog.Show()
 
 			go func() {
-				fyne.Do(func() {
-					progressBar.SetValue(0.05)
-				})
-
-				gitDir := targetPath
-				execGitCommand := func(command string, args ...string) (string, error) {
-					cmd := exec.Command(command, args...)
-					cmd.Dir = gitDir
-					output, err := cmd.CombinedOutput()
-					return string(output), err
+				setProgress := func(v float64) {
+					fyne.Do(func() { progressBar.SetValue(v) })
 				}
+				setProgress(0.05)
 
 				// Check if there are any changes to commit
-				statusOutput, statusErr := execGitCommand("git", "status", "--porcelain")
-				hasChanges := statusErr == nil && strings.TrimSpace(statusOutput) != ""
-
-				fyne.Do(func() {
-					progressBar.SetValue(0.1)
-				})
-
-				// Fetch latest changes from remote
-				_, fetchErr := execGitCommand("git", "fetch", "--all")
-				if fetchErr != nil {
-					fyne.Do(func() {
-						fyne.CurrentApp().SendNotification(&fyne.Notification{
-							Title:   "Git Fetch Failed",
-							Content: fmt.Sprintf("Error: %v", fetchErr),
-						})
-						progressDialog.Hide()
-					})
+				statusOutput, statusErr := runGit(targetPath, "status", "--porcelain")
+				if statusErr != nil {
+					showGitError(progressDialog, statusErr)
 					return
 				}
+				hasChanges := strings.TrimSpace(statusOutput) != ""
 
-				fyne.Do(func() {
-					progressBar.SetValue(0.3)
-				})
-
-				// Pull latest changes
-				_, pullErr := execGitCommand("git", "pull", "--rebase")
-				if pullErr != nil {
-					fyne.Do(func() {
-						fyne.CurrentApp().SendNotification(&fyne.Notification{
-							Title:   "Git Pull Failed",
-							Content: fmt.Sprintf("Error: %v", pullErr),
-						})
-						progressDialog.Hide()
-					})
-					return
-				}
-
-				// If there are local changes, commit them
+				// Local changes are committed first: `git pull --rebase`
+				// refuses to run on a dirty working tree.
 				if hasChanges {
-					fyne.Do(func() {
-						progressBar.SetValue(0.5)
-					})
-
-					// Add all changes
-					_, addErr := execGitCommand("git", "add", ".")
-					if addErr != nil {
-						fyne.Do(func() {
-							fyne.CurrentApp().SendNotification(&fyne.Notification{
-								Title:   "Git Add Failed",
-								Content: fmt.Sprintf("Error: %v", addErr),
-							})
-							progressDialog.Hide()
-						})
-						return
-					}
-
-					// Commit with timestamp
+					setProgress(0.1)
 					commitMsg := fmt.Sprintf("Auto-commit: %s", time.Now().Format("2006-01-02 15:04:05"))
-					_, commitErr := execGitCommand("git", "commit", "-m", commitMsg)
-					if commitErr != nil {
-						fyne.Do(func() {
-							fyne.CurrentApp().SendNotification(&fyne.Notification{
-								Title:   "Git Commit Failed",
-								Content: fmt.Sprintf("Error: %v", commitErr),
-							})
-							progressDialog.Hide()
-						})
+					if err := commitAll(targetPath, commitMsg, nil); err != nil {
+						showGitError(progressDialog, err)
 						return
 					}
 				}
 
-				fyne.Do(func() {
-					progressBar.SetValue(0.8)
-				})
+				setProgress(0.3)
+
+				// Pull latest changes, replaying local commits on top
+				if _, err := runGit(targetPath, "pull", "--rebase"); err != nil {
+					showGitError(progressDialog, err)
+					return
+				}
+
+				setProgress(0.7)
 
 				// Push to remote
-				_, pushErr := execGitCommand("git", "push")
-				if pushErr != nil {
-					fyne.Do(func() {
-						fyne.CurrentApp().SendNotification(&fyne.Notification{
-							Title:   "Git Push Failed",
-							Content: fmt.Sprintf("Error: %v", pushErr),
-						})
-						progressDialog.Hide()
-					})
+				if _, err := runGit(targetPath, "push"); err != nil {
+					showGitError(progressDialog, err)
 					return
 				}
 
@@ -1133,11 +843,7 @@ func main() {
 					progressBar.SetValue(1.0)
 
 					// Refresh the store data
-					if newStore, refreshErr := scanpassstore.ScanPasswordStore(targetPath); refreshErr == nil {
-						storePtr.Store(newStore)
-						tree.Refresh()
-						fileList.Refresh()
-					}
+					reloadStore()
 
 					// Show success notification
 					var message string
@@ -1182,4 +888,29 @@ func main() {
 
 	myWindow.SetContent(mainContainer)
 	myWindow.ShowAndRun()
+}
+
+// runGit runs git with args inside dir. On failure git's combined output is
+// folded into the error so the cause is visible in the UI.
+func runGit(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(output), fmt.Errorf("git %s failed: %v\n%s", args[0], err, strings.TrimSpace(string(output)))
+	}
+	return string(output), nil
+}
+
+// commitAll stages every change in the repository at dir and commits it
+// with message. progress, if non-nil, is called between the two steps.
+func commitAll(dir, message string, progress func(float64)) error {
+	if _, err := runGit(dir, "add", "-A"); err != nil {
+		return err
+	}
+	if progress != nil {
+		progress(0.8)
+	}
+	_, err := runGit(dir, "commit", "-m", message)
+	return err
 }

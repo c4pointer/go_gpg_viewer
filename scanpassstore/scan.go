@@ -20,6 +20,13 @@ type PasswordStore struct {
 	AllPaths map[string]string
 }
 
+// isHidden reports whether a directory should be skipped while scanning.
+// Like pass(1), dot-directories such as .git or .extensions are not part of
+// the store, and walking .git on every refresh is needlessly slow.
+func isHidden(name string) bool {
+	return strings.HasPrefix(name, ".")
+}
+
 // scanDirectory recursively scans a directory for .gpg files and subdirectories
 func scanDirectory(dirPath string, relativePath string) ([]string, []string, error) {
 	var files []string
@@ -32,6 +39,9 @@ func scanDirectory(dirPath string, relativePath string) ([]string, []string, err
 
 	for _, entry := range entries {
 		if entry.IsDir() {
+			if isHidden(entry.Name()) {
+				continue
+			}
 			// Recursively scan subdirectory
 			subdirPath := filepath.Join(dirPath, entry.Name())
 			subdirRelativePath := filepath.Join(relativePath, entry.Name())
@@ -87,7 +97,7 @@ func ScanPasswordStore(targetPath string) (*PasswordStore, error) {
 	}
 
 	for _, dir := range dirs {
-		if dir.IsDir() {
+		if dir.IsDir() && !isHidden(dir.Name()) {
 			dirPath := filepath.Join(targetPath, dir.Name())
 
 			// Recursively scan the directory

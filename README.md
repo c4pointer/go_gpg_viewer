@@ -332,13 +332,15 @@ gpg_viewer
 2. **View and Edit Passwords**
    - Click on any password file to decrypt and view its contents
    - Use the "Save Changes" button to encrypt and save modifications
+   - Edit the "Name" field to rename a record or move it to another folder
+     (e.g. `Work/github`); missing folders are created and emptied ones removed
    - The application automatically handles GPG passphrase prompts
 
 3. **Git Operations**
    - Use the toolbar buttons for Git operations:
      - 🔄 **Refresh**: Reload the password store
      - 💾 **Commit**: Commit changes to Git
-     - 🔄 **Sync**: Pull and push changes to/from remote repository
+     - 🔄 **Sync**: Commit local changes, pull (rebase) and push to the remote repository
 
 4. **Settings**
    - Click the settings icon (⚙️) to configure:
