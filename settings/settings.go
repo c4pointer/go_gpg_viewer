@@ -59,7 +59,7 @@ func DefaultSettings() *Settings {
 		DefaultRecipient:  "",
 		AutoCommit:        true,
 		ShowNotifications: true,
-		Theme:             "light",
+		Theme:             "system",
 		WindowWidth:       800,
 		WindowHeight:      600,
 		SplitOffset:       0.3,

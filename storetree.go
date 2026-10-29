@@ -13,123 +13,117 @@ import (
 // records are identified by their full path relative to the store root,
 // prefixed with their kind. Bare base names are not enough: "Work/github"
 // and "Personal/github" would collide and the wrong record could be opened.
+// The empty ID is the (invisible) root of the tree and stands for the store
+// root directory.
 const (
-	nodeRootFiles    = "Root"
-	nodeDirectories  = "Directories"
 	dirNodePrefix    = "dir:"
 	recordNodePrefix = "rec:"
 )
 
-// dirNode returns the tree node ID of the directory rel (relative to the store root).
-func dirNode(rel string) string { return dirNodePrefix + rel }
+// dirNode returns the tree node ID of the directory rel (relative to the
+// store root). The store root itself is the empty node.
+func dirNode(rel string) string {
+	if rel == "" || rel == "." {
+		return ""
+	}
+	return dirNodePrefix + rel
+}
 
 // recordNode returns the tree node ID of the record rel (relative to the
 // store root, without the .gpg extension).
 func recordNode(rel string) string { return recordNodePrefix + rel }
 
-// dirFromNode returns the relative directory path of a directory node.
-func dirFromNode(id string) (string, bool) { return strings.CutPrefix(id, dirNodePrefix) }
+// dirFromNode returns the relative directory path of a directory node; the
+// root node maps to "".
+func dirFromNode(id string) (string, bool) {
+	if id == "" {
+		return "", true
+	}
+	return strings.CutPrefix(id, dirNodePrefix)
+}
 
 // recordFromNode returns the relative record path of a record node.
 func recordFromNode(id string) (string, bool) { return strings.CutPrefix(id, recordNodePrefix) }
 
-// nodeChildren returns the child node IDs of id within store.
-func nodeChildren(store *scanpassstore.PasswordStore, id string) []string {
-	switch id {
-	case "":
-		var children []string
-		if len(store.RootFiles) > 0 {
-			children = append(children, nodeRootFiles)
-		}
-		return append(children, nodeDirectories)
-	case nodeRootFiles:
-		children := make([]string, 0, len(store.RootFiles))
-		for _, name := range store.RootFiles {
-			children = append(children, recordNode(name))
-		}
-		return children
-	case nodeDirectories:
-		children := make([]string, 0, len(store.Directories))
-		for _, dir := range store.Directories {
-			children = append(children, dirNode(dir))
-		}
-		return children
+// dirRecords returns the records directly inside dir as paths relative to
+// the store root.
+func dirRecords(store *scanpassstore.PasswordStore, dir string) []string {
+	var names []string
+	if dir == "" {
+		names = store.RootFiles
+	} else {
+		names = store.DirContents[dir]
 	}
+	records := make([]string, 0, len(names))
+	for _, name := range names {
+		records = append(records, filepath.Join(dir, name))
+	}
+	return records
+}
 
+// nodeChildren returns the child node IDs of id within store: folders
+// first, then records, each in store order.
+func nodeChildren(store *scanpassstore.PasswordStore, id string) []string {
 	dir, ok := dirFromNode(id)
 	if !ok {
 		return nil
 	}
-	var children []string
-	for _, name := range store.DirContents[dir] {
-		children = append(children, recordNode(filepath.Join(dir, name)))
+	var subdirs []string
+	if dir == "" {
+		subdirs = store.Directories
+	} else {
+		subdirs = store.NestedDirs[dir]
 	}
-	for _, sub := range store.NestedDirs[dir] {
+	var children []string
+	for _, sub := range subdirs {
 		children = append(children, dirNode(filepath.Join(dir, sub)))
+	}
+	for _, rec := range dirRecords(store, dir) {
+		children = append(children, recordNode(rec))
 	}
 	return children
 }
 
 // nodeIsBranch reports whether the node id can have children.
 func nodeIsBranch(id string) bool {
-	if id == "" || id == nodeRootFiles || id == nodeDirectories {
-		return true
-	}
 	_, ok := dirFromNode(id)
 	return ok
 }
 
 // nodeLabel returns the text shown for the node id in the tree.
 func nodeLabel(id string) string {
-	switch id {
-	case "":
-		return "Password Store"
-	case nodeRootFiles:
-		return "Root Files"
-	case nodeDirectories:
-		return "Directories"
-	}
 	if dir, ok := dirFromNode(id); ok {
-		if strings.ContainsRune(dir, filepath.Separator) {
-			return "📂 " + filepath.Base(dir)
+		if dir == "" {
+			return "Password store"
 		}
-		return "📁 " + dir
+		return filepath.Base(dir)
 	}
 	if rec, ok := recordFromNode(id); ok {
-		return "📄 " + filepath.Base(rec)
+		return filepath.Base(rec)
 	}
 	return id
 }
 
-// parentNode returns the tree node that lists the record rel: the
-// "Root Files" node for root records, otherwise its directory node.
+// parentNode returns the tree node of the directory that holds the record
+// rel: the root node for root records.
 func parentNode(rel string) string {
-	if dir := filepath.Dir(rel); dir != "." {
-		return dirNode(dir)
-	}
-	return nodeRootFiles
+	return dirNode(filepath.Dir(rel))
 }
 
 // nodeListing returns the records (relative paths without .gpg) shown in the
-// record list when the tree node id is selected, plus a status line.
-func nodeListing(store *scanpassstore.PasswordStore, id string) ([]string, string) {
-	if id == nodeRootFiles {
-		records := append([]string(nil), store.RootFiles...)
-		return records, fmt.Sprintf("Root directory contains %d password files", len(records))
-	}
+// record list when the tree node id is selected, plus a heading for it.
+func nodeListing(store *scanpassstore.PasswordStore, id string) (records []string, heading string) {
 	dir, ok := dirFromNode(id)
 	if !ok {
-		return nil, "Select a directory or file to view details"
+		return nil, ""
 	}
-	files, ok := store.DirContents[dir]
-	if !ok {
-		return nil, fmt.Sprintf("Directory '%s' no longer exists", dir)
+	if dir == "" {
+		return dirRecords(store, ""), "Password store"
 	}
-	records := make([]string, 0, len(files))
-	for _, name := range files {
-		records = append(records, filepath.Join(dir, name))
+	if _, exists := store.DirContents[dir]; !exists {
+		return nil, fmt.Sprintf("%s (folder no longer exists)", dir)
 	}
-	return records, fmt.Sprintf("Directory '%s' contains %d password files", dir, len(records))
+	return dirRecords(store, dir), dir
 }
 
 // searchRecords returns, sorted, every record whose relative path contains
@@ -143,4 +137,17 @@ func searchRecords(store *scanpassstore.PasswordStore, query string) []string {
 	}
 	sort.Strings(results)
 	return results
+}
+
+// countRecords returns how many records the store holds.
+func countRecords(store *scanpassstore.PasswordStore) int {
+	return len(store.AllPaths)
+}
+
+// plural returns "n word" or "n words".
+func plural(n int, word string) string {
+	if n == 1 {
+		return fmt.Sprintf("1 %s", word)
+	}
+	return fmt.Sprintf("%d %ss", n, word)
 }

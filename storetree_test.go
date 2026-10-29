@@ -33,12 +33,10 @@ func newTestStore(t *testing.T) *scanpassstore.PasswordStore {
 func TestNodeChildren(t *testing.T) {
 	store := newTestStore(t)
 
-	assert.Equal(t, []string{nodeRootFiles, nodeDirectories}, nodeChildren(store, ""))
-	assert.Equal(t, []string{recordNode("email")}, nodeChildren(store, nodeRootFiles))
-	assert.Equal(t, []string{dirNode("Personal"), dirNode("Work")}, nodeChildren(store, nodeDirectories))
+	assert.Equal(t, []string{dirNode("Personal"), dirNode("Work"), recordNode("email")}, nodeChildren(store, ""))
 	assert.Equal(t, []string{
-		recordNode(filepath.Join("Work", "github")),
 		dirNode(filepath.Join("Work", "Cloud")),
+		recordNode(filepath.Join("Work", "github")),
 	}, nodeChildren(store, dirNode("Work")))
 	assert.Equal(t, []string{recordNode(filepath.Join("Work", "Cloud", "aws"))},
 		nodeChildren(store, dirNode(filepath.Join("Work", "Cloud"))))
@@ -63,35 +61,36 @@ func TestNodeChildrenAreUnique(t *testing.T) {
 
 func TestNodeIsBranchAndLabel(t *testing.T) {
 	assert.True(t, nodeIsBranch(""))
-	assert.True(t, nodeIsBranch(nodeRootFiles))
 	assert.True(t, nodeIsBranch(dirNode("Work")))
 	assert.False(t, nodeIsBranch(recordNode("email")))
 
-	assert.Equal(t, "Root Files", nodeLabel(nodeRootFiles))
-	assert.Equal(t, "📁 Work", nodeLabel(dirNode("Work")))
-	assert.Equal(t, "📂 Cloud", nodeLabel(dirNode(filepath.Join("Work", "Cloud"))))
-	assert.Equal(t, "📄 aws", nodeLabel(recordNode(filepath.Join("Work", "Cloud", "aws"))))
+	assert.Equal(t, "Password store", nodeLabel(""))
+	assert.Equal(t, "Work", nodeLabel(dirNode("Work")))
+	assert.Equal(t, "Cloud", nodeLabel(dirNode(filepath.Join("Work", "Cloud"))))
+	assert.Equal(t, "aws", nodeLabel(recordNode(filepath.Join("Work", "Cloud", "aws"))))
 }
 
 func TestParentNode(t *testing.T) {
-	assert.Equal(t, nodeRootFiles, parentNode("email"))
+	assert.Equal(t, "", parentNode("email"))
 	assert.Equal(t, dirNode(filepath.Join("Work", "Cloud")), parentNode(filepath.Join("Work", "Cloud", "aws")))
 }
 
 func TestNodeListing(t *testing.T) {
 	store := newTestStore(t)
 
-	records, _ := nodeListing(store, nodeRootFiles)
+	records, heading := nodeListing(store, "")
 	assert.Equal(t, []string{"email"}, records)
+	assert.Equal(t, "Password store", heading)
 
-	records, _ = nodeListing(store, dirNode("Work"))
+	records, heading = nodeListing(store, dirNode("Work"))
 	assert.Equal(t, []string{filepath.Join("Work", "github")}, records)
+	assert.Equal(t, "Work", heading)
 
-	records, status := nodeListing(store, dirNode("Gone"))
+	records, heading = nodeListing(store, dirNode("Gone"))
 	assert.Empty(t, records)
-	assert.Contains(t, status, "no longer exists")
+	assert.Contains(t, heading, "no longer exists")
 
-	records, _ = nodeListing(store, "")
+	records, _ = nodeListing(store, recordNode("email"))
 	assert.Empty(t, records)
 }
 
@@ -104,4 +103,11 @@ func TestSearchRecords(t *testing.T) {
 	}, searchRecords(store, "github"))
 	assert.Equal(t, []string{filepath.Join("Work", "Cloud", "aws")}, searchRecords(store, "cloud"))
 	assert.Empty(t, searchRecords(store, "nothing"))
+}
+
+func TestCountRecordsAndPlural(t *testing.T) {
+	assert.Equal(t, 4, countRecords(newTestStore(t)))
+	assert.Equal(t, "1 record", plural(1, "record"))
+	assert.Equal(t, "0 records", plural(0, "record"))
+	assert.Equal(t, "12 records", plural(12, "record"))
 }
