@@ -2,20 +2,22 @@
 
 A modern, cross-platform GUI application for browsing and managing password-store entries with GPG encryption support. Built with Go and Fyne framework.
 
-![GPG Password Store Viewer](https://img.shields.io/badge/Go-1.24.4+-blue.svg)
+![GPG Password Store Viewer](https://img.shields.io/badge/Go-1.26+-blue.svg)
 ![Fyne](https://img.shields.io/badge/Fyne-2.6.1+-green.svg)
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 ## Features
 
-- 🔐 **GPG Integration**: Seamless decryption and encryption of password files
-- 📁 **Hierarchical View**: Browse nested directory structures with expandable folders
-- ✏️ **Inline Editing**: Edit password files directly in the application
-- 🔄 **Git Integration**: Automatic commit and sync with remote repositories
-- 🎨 **Theme Support**: Light and dark themes with immediate application
-- ⚙️ **Configurable Settings**: Customizable password store path and preferences
-- 🔑 **Smart Passphrase Handling**: Uses GPG agent when available, prompts when needed
-- 📱 **Modern UI**: Clean, intuitive interface built with Fyne framework
+- 🔐 **GPG Integration**: Records are decrypted with gpg-agent (or a passphrase
+  prompt) and re-encrypted for the recipients in the store's `.gpg-id`, like `pass`
+- 📁 **Folder tree and search**: Browse nested folders or search the whole store
+- ✏️ **Full editing**: Edit the password and notes, rename or move a record to
+  another folder, delete it, generate a strong password, copy it to a clipboard
+  that clears itself after 30 seconds
+- 🔄 **Git Integration**: Every change can be committed automatically; **Sync**
+  works out on its own whether to commit, pull or push
+- 🎨 **Theme Support**: Follows the system light/dark preference, or pick one
+- 🖥️ **Wayland and X11**: One binary, the right backend is chosen at start
 
 ## Quick Start
 
@@ -41,29 +43,37 @@ make uninstall       # for system-wide installation
 ### System Requirements
 
 - **Operating System**: Linux (tested on RHEL 9, Ubuntu, Debian)
-- **Go Version**: 1.24.4 or higher
+- **Go Version**: 1.26 or higher
 - **GPG**: GnuPG installed and configured
 - **Git**: For repository synchronization (optional)
 
 ### Required Dependencies
 
+The GUI is built with [Fyne](https://fyne.io), which needs the OpenGL, X11 and
+Wayland development headers at build time.
+
 #### Ubuntu/Debian
 ```bash
 sudo apt update
-sudo apt install golang-go gpg git build-essential
+sudo apt install golang-go gpg git build-essential \
+  libgl1-mesa-dev xorg-dev libxkbcommon-dev libwayland-dev wayland-protocols
 ```
 
-#### RHEL/CentOS/Fedora
+#### Fedora
 ```bash
-sudo dnf install golang gpg git gcc
-# or for older versions:
-# sudo yum install golang gpg git gcc
+sudo dnf install golang gpg git gcc mesa-libGL-devel libXcursor-devel \
+  libXrandr-devel libXinerama-devel libXi-devel libxkbcommon-devel \
+  wayland-devel wayland-protocols-devel
 ```
 
 #### Arch Linux
 ```bash
-sudo pacman -S go gnupg git base-devel
+sudo pacman -S go gnupg git base-devel mesa libxcursor libxrandr libxinerama \
+  libxi libxkbcommon wayland wayland-protocols
 ```
+
+Without the Wayland headers, build an X11-only binary with `make TAGS=x11`
+(it also runs under XWayland).
 
 ## Installation
 
@@ -112,7 +122,7 @@ make install-user
 /
 
 # Just build the application
-make build
+make build 
 
 # Show all available commands
 make help
@@ -292,7 +302,9 @@ If the commands above return "not found" or similar errors, the uninstallation w
 
 ### Application Settings
 
-The application automatically creates a configuration file at `~/.config/go_gpg_viewer/config.json` on first run. You can manually configure:
+The application creates `~/.config/gpg_viewer/settings.json` (or the
+`$XDG_CONFIG_HOME` equivalent) on first run. Everything in it can be changed
+from the Settings dialog:
 
 ```json
 {
@@ -300,7 +312,7 @@ The application automatically creates a configuration file at `~/.config/go_gpg_
   "default_recipient": "your-email@example.com",
   "auto_commit": true,
   "show_notifications": true,
-  "theme": "light",
+  "theme": "system",
   "window_width": 800,
   "window_height": 600,
   "split_offset": 0.3
@@ -323,37 +335,47 @@ gpg_viewer
 
 ### Basic Operations
 
-1. **Browse Password Store**
-   - The left panel shows the hierarchical structure of your password store
-   - Click on folders to expand/collapse them
-   - Files are shown with document icons (📄)
-   - Folders are shown with folder icons (📁/📂)
+1. **Browse the store**
+   - The folder tree on the left mirrors your password store; a selected folder
+     lists its records on the right
+   - Type in the search box to find records anywhere in the store by name or path
+   - The status bar shows what just happened and how many records the store holds
 
-2. **View and Edit Passwords**
-   - Click on any password file to decrypt and view its contents
-   - Use the "Save Changes" button to encrypt and save modifications
-   - The application automatically handles GPG passphrase prompts
+2. **Open and edit a record**
+   - Click a record to decrypt it (gpg-agent is used when available, otherwise
+     you are asked for the passphrase)
+   - The first line is the password, everything else is notes, as in `pass`
+   - Change the **Name** to rename the record or move it to another folder
+     (`Work/github`); missing folders are created and emptied ones removed
+   - **Copy** puts the password on the clipboard and clears it after 30 seconds;
+     **Generate** fills in a 20-character random password; **Delete** removes
+     the record after confirmation
+   - Saved records are encrypted for the recipients in the nearest `.gpg-id`;
+     without one, the original file's key or the default recipient is used
 
-3. **Git Operations**
-   - Use the toolbar buttons for Git operations:
-     - 🔄 **Refresh**: Reload the password store
-     - 💾 **Commit**: Commit changes to Git
-     - 🔄 **Sync**: Pull and push changes to/from remote repository
+3. **New record**
+   - **New record** (or `Ctrl+N`) opens a form; with a folder selected the name
+     is prefilled with `Folder/`
+   - Leave **Encrypt for** empty to use the store's `.gpg-id`
 
-4. **Settings**
-   - Click the settings icon (⚙️) to configure:
-     - Password store path
-     - Default GPG recipient
-     - Auto-commit settings
-     - Theme selection
-     - Notification preferences
+4. **Git**
+   - With *Commit every change to git* enabled (default), each save, rename,
+     create or delete becomes a commit, as with `pass`
+   - **Commit** records any pending changes by hand
+   - **Sync** commits pending changes, fetches, then pulls and/or pushes only
+     what the branch's ahead/behind state requires. A branch without an
+     upstream is published to `origin`. On a conflict the pull is undone, and
+     sync refuses to run while a rebase or merge is unfinished
+
+5. **Settings** (⚙️)
+   - Password store folder (switched without a restart), default recipient,
+     auto-commit, notifications and theme
 
 ### Keyboard Shortcuts
 
-- `Ctrl+Q`: Quit application
-- `Ctrl+S`: Save current file (when editing)
-- `Ctrl+Z`: Undo (when editing)
-- `Ctrl+Y`: Redo (when editing)
+- `Ctrl+N`: New record
+- `Ctrl+F`: Jump to the search box
+- `Ctrl+Z` / `Ctrl+Y`: Undo / redo inside a text field
 
 ## Troubleshooting
 

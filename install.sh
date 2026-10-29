@@ -81,17 +81,23 @@ install_dependencies() {
         case "$os" in
             *"Ubuntu"*|*"Debian"*)
                 sudo apt update
-                sudo apt install -y golang-go gpg git build-essential
+                sudo apt install -y golang-go gpg git build-essential \
+                    libgl1-mesa-dev xorg-dev libxkbcommon-dev libwayland-dev wayland-protocols
                 ;;
             *"Red Hat"*|*"CentOS"*|*"Fedora"*|*"RHEL"*)
                 if command_exists dnf; then
-                    sudo dnf install -y golang gpg git gcc
+                    sudo dnf install -y golang gpg git gcc mesa-libGL-devel \
+                        libXcursor-devel libXrandr-devel libXinerama-devel libXi-devel \
+                        libxkbcommon-devel wayland-devel wayland-protocols-devel
                 elif command_exists yum; then
-                    sudo yum install -y golang gpg git gcc
+                    sudo yum install -y golang gpg git gcc mesa-libGL-devel \
+                        libXcursor-devel libXrandr-devel libXinerama-devel libXi-devel \
+                        libxkbcommon-devel wayland-devel wayland-protocols-devel
                 fi
                 ;;
             *"Arch"*)
-                sudo pacman -S --noconfirm go gnupg git base-devel
+                sudo pacman -S --noconfirm go gnupg git base-devel mesa libxcursor \
+                    libxrandr libxinerama libxi libxkbcommon wayland wayland-protocols
                 ;;
             *)
                 print_error "Unsupported OS: $os"

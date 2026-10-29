@@ -4,11 +4,49 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// setTestConfigHome points both HOME and XDG_CONFIG_HOME at dir so that
+// LoadSettings/SaveSettings write into the test's temp area on every
+// supported platform.
+func setTestConfigHome(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("HOME", dir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, ".config"))
+}
+
+func TestIsValidRecipient(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		ok    bool
+	}{
+		{"empty is ok", "", true},
+		{"whitespace is ok", "  ", true},
+		{"simple email", "alice@example.com", true},
+		{"email with plus tag", "alice+gpg@example.com", true},
+		{"short keyid 8 hex", "DEADBEEF", true},
+		{"long keyid 16 hex", "0123456789ABCDEF", true},
+		{"fingerprint 40 hex", "0123456789ABCDEF0123456789ABCDEF01234567", true},
+		{"keyid with 0x prefix", "0x0123456789ABCDEF", true},
+
+		{"email without dot", "alice@example", false},
+		{"email with angle brackets", "<alice@example.com>", false},
+		{"non-hex string", "not-a-keyid", false},
+		{"too short for keyid", "DEAD", false},
+		{"keyid with whitespace", "DEAD BEEF", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.ok, IsValidRecipient(c.input))
+		})
+	}
+}
 
 func TestDefaultSettings(t *testing.T) {
 	settings := DefaultSettings()
@@ -19,24 +57,16 @@ func TestDefaultSettings(t *testing.T) {
 	assert.Equal(t, "", settings.DefaultRecipient)
 	assert.True(t, settings.AutoCommit)
 	assert.True(t, settings.ShowNotifications)
-	assert.Equal(t, "light", settings.Theme)
+	assert.Equal(t, "system", settings.Theme)
 	assert.Equal(t, 800, settings.WindowWidth)
 	assert.Equal(t, 600, settings.WindowHeight)
 	assert.Equal(t, 0.3, settings.SplitOffset)
 }
 
 func TestLoadSettingsNewFile(t *testing.T) {
-	// Create a temporary directory for testing
-	tempDir, err := os.MkdirTemp("", "settings_test")
-	require.NoError(t, err)
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
+	setTestConfigHome(t, tempDir)
 
-	// Set environment variable to override config path
-	originalHome := os.Getenv("HOME")
-	defer os.Setenv("HOME", originalHome)
-	os.Setenv("HOME", tempDir)
-
-	// Test loading settings when file doesn't exist
 	settings, err := LoadSettings()
 	require.NoError(t, err)
 	assert.NotNil(t, settings)
@@ -46,7 +76,7 @@ func TestLoadSettingsNewFile(t *testing.T) {
 	assert.Equal(t, "", settings.DefaultRecipient)
 	assert.True(t, settings.AutoCommit)
 	assert.True(t, settings.ShowNotifications)
-	assert.Equal(t, "light", settings.Theme)
+	assert.Equal(t, "system", settings.Theme)
 	assert.Equal(t, 800, settings.WindowWidth)
 	assert.Equal(t, 600, settings.WindowHeight)
 	assert.Equal(t, 0.3, settings.SplitOffset)
@@ -58,15 +88,8 @@ func TestLoadSettingsNewFile(t *testing.T) {
 }
 
 func TestLoadSettingsExistingFile(t *testing.T) {
-	// Create a temporary directory for testing
-	tempDir, err := os.MkdirTemp("", "settings_test")
-	require.NoError(t, err)
-	defer os.RemoveAll(tempDir)
-
-	// Set environment variable to override config path
-	originalHome := os.Getenv("HOME")
-	defer os.Setenv("HOME", originalHome)
-	os.Setenv("HOME", tempDir)
+	tempDir := t.TempDir()
+	setTestConfigHome(t, tempDir)
 
 	// Create existing settings file
 	existingSettings := &Settings{
@@ -85,13 +108,13 @@ func TestLoadSettingsExistingFile(t *testing.T) {
 
 	// Ensure config directory exists
 	configDir := filepath.Dir(configPath)
-	err = os.MkdirAll(configDir, 0755)
+	err = os.MkdirAll(configDir, 0700)
 	require.NoError(t, err)
 
 	// Write existing settings
 	data, err := json.MarshalIndent(existingSettings, "", "  ")
 	require.NoError(t, err)
-	err = os.WriteFile(configPath, data, 0644)
+	err = os.WriteFile(configPath, data, 0600)
 	require.NoError(t, err)
 
 	// Test loading existing settings
@@ -111,15 +134,8 @@ func TestLoadSettingsExistingFile(t *testing.T) {
 }
 
 func TestSaveSettings(t *testing.T) {
-	// Create a temporary directory for testing
-	tempDir, err := os.MkdirTemp("", "settings_test")
-	require.NoError(t, err)
-	defer os.RemoveAll(tempDir)
-
-	// Set environment variable to override config path
-	originalHome := os.Getenv("HOME")
-	defer os.Setenv("HOME", originalHome)
-	os.Setenv("HOME", tempDir)
+	tempDir := t.TempDir()
+	setTestConfigHome(t, tempDir)
 
 	// Create settings to save
 	settings := &Settings{
@@ -134,7 +150,7 @@ func TestSaveSettings(t *testing.T) {
 	}
 
 	// Test saving settings
-	err = SaveSettings(settings)
+	err := SaveSettings(settings)
 	require.NoError(t, err)
 
 	// Verify file was created
@@ -161,21 +177,58 @@ func TestSaveSettings(t *testing.T) {
 	assert.Equal(t, 0.4, savedSettings.SplitOffset)
 }
 
-func TestUpdateSettings(t *testing.T) {
-	// Create a temporary directory for testing
-	tempDir, err := os.MkdirTemp("", "settings_test")
-	require.NoError(t, err)
-	defer os.RemoveAll(tempDir)
+// TestSaveSettingsFilePermissions ensures the on-disk config file is
+// user-private — it carries the GPG default recipient and password-store
+// path, neither of which should be world-readable on shared machines.
+func TestSaveSettingsFilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file modes not applicable on Windows")
+	}
+	tempDir := t.TempDir()
+	setTestConfigHome(t, tempDir)
 
-	// Set environment variable to override config path
-	originalHome := os.Getenv("HOME")
-	defer os.Setenv("HOME", originalHome)
-	os.Setenv("HOME", tempDir)
+	require.NoError(t, SaveSettings(DefaultSettings()))
+
+	configPath, err := getConfigPath()
+	require.NoError(t, err)
+
+	info, err := os.Stat(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0600), info.Mode().Perm(),
+		"config file must be readable by the owner only")
+
+	dirInfo, err := os.Stat(filepath.Dir(configPath))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0700), dirInfo.Mode().Perm(),
+		"config directory must be searchable by the owner only")
+}
+
+// TestSaveSettingsAtomic verifies that no half-written settings.tmp file
+// is left in the config directory after a successful save.
+func TestSaveSettingsAtomic(t *testing.T) {
+	tempDir := t.TempDir()
+	setTestConfigHome(t, tempDir)
+
+	require.NoError(t, SaveSettings(DefaultSettings()))
+
+	configPath, err := getConfigPath()
+	require.NoError(t, err)
+
+	entries, err := os.ReadDir(filepath.Dir(configPath))
+	require.NoError(t, err)
+	for _, e := range entries {
+		assert.NotContains(t, e.Name(), ".tmp",
+			"atomic write must remove the temp file on success")
+	}
+}
+
+func TestUpdateSettings(t *testing.T) {
+	tempDir := t.TempDir()
+	setTestConfigHome(t, tempDir)
 
 	// Create initial settings
 	initialSettings := DefaultSettings()
-	err = SaveSettings(initialSettings)
-	require.NoError(t, err)
+	require.NoError(t, SaveSettings(initialSettings))
 
 	// Test updating specific settings
 	updates := map[string]interface{}{
@@ -188,8 +241,7 @@ func TestUpdateSettings(t *testing.T) {
 		"split_offset":        0.6,
 	}
 
-	err = UpdateSettings(updates)
-	require.NoError(t, err)
+	require.NoError(t, UpdateSettings(updates))
 
 	// Load and verify updated settings
 	updatedSettings, err := LoadSettings()
@@ -210,20 +262,10 @@ func TestUpdateSettings(t *testing.T) {
 }
 
 func TestUpdateSettingsInvalidKey(t *testing.T) {
-	// Create a temporary directory for testing
-	tempDir, err := os.MkdirTemp("", "settings_test")
-	require.NoError(t, err)
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
+	setTestConfigHome(t, tempDir)
 
-	// Set environment variable to override config path
-	originalHome := os.Getenv("HOME")
-	defer os.Setenv("HOME", originalHome)
-	os.Setenv("HOME", tempDir)
-
-	// Create initial settings
-	initialSettings := DefaultSettings()
-	err = SaveSettings(initialSettings)
-	require.NoError(t, err)
+	require.NoError(t, SaveSettings(DefaultSettings()))
 
 	// Test updating with invalid key (should be ignored)
 	updates := map[string]interface{}{
@@ -231,8 +273,7 @@ func TestUpdateSettingsInvalidKey(t *testing.T) {
 		"theme":       "dark",
 	}
 
-	err = UpdateSettings(updates)
-	require.NoError(t, err)
+	require.NoError(t, UpdateSettings(updates))
 
 	// Load and verify settings
 	updatedSettings, err := LoadSettings()
@@ -241,24 +282,13 @@ func TestUpdateSettingsInvalidKey(t *testing.T) {
 
 	// Verify valid update was applied
 	assert.Equal(t, "dark", updatedSettings.Theme)
-	// Invalid key should be ignored
 }
 
 func TestUpdateSettingsInvalidType(t *testing.T) {
-	// Create a temporary directory for testing
-	tempDir, err := os.MkdirTemp("", "settings_test")
-	require.NoError(t, err)
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
+	setTestConfigHome(t, tempDir)
 
-	// Set environment variable to override config path
-	originalHome := os.Getenv("HOME")
-	defer os.Setenv("HOME", originalHome)
-	os.Setenv("HOME", tempDir)
-
-	// Create initial settings
-	initialSettings := DefaultSettings()
-	err = SaveSettings(initialSettings)
-	require.NoError(t, err)
+	require.NoError(t, SaveSettings(DefaultSettings()))
 
 	// Test updating with wrong type (should be ignored)
 	updates := map[string]interface{}{
@@ -266,8 +296,7 @@ func TestUpdateSettingsInvalidType(t *testing.T) {
 		"theme":        "dark",
 	}
 
-	err = UpdateSettings(updates)
-	require.NoError(t, err)
+	require.NoError(t, UpdateSettings(updates))
 
 	// Load and verify settings
 	updatedSettings, err := LoadSettings()
@@ -281,28 +310,18 @@ func TestUpdateSettingsInvalidType(t *testing.T) {
 }
 
 func TestLoadSettingsCorruptedFile(t *testing.T) {
-	// Create a temporary directory for testing
-	tempDir, err := os.MkdirTemp("", "settings_test")
-	require.NoError(t, err)
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
+	setTestConfigHome(t, tempDir)
 
-	// Set environment variable to override config path
-	originalHome := os.Getenv("HOME")
-	defer os.Setenv("HOME", originalHome)
-	os.Setenv("HOME", tempDir)
-
-	// Create corrupted settings file
 	configPath, err := getConfigPath()
 	require.NoError(t, err)
 
 	// Ensure config directory exists
 	configDir := filepath.Dir(configPath)
-	err = os.MkdirAll(configDir, 0755)
-	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(configDir, 0700))
 
 	// Write invalid JSON
-	err = os.WriteFile(configPath, []byte("invalid json content"), 0644)
-	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configPath, []byte("invalid json content"), 0600))
 
 	// Test loading corrupted settings
 	settings, err := LoadSettings()
@@ -311,46 +330,13 @@ func TestLoadSettingsCorruptedFile(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to parse config file")
 }
 
-func TestSaveSettingsPermissionError(t *testing.T) {
-	// Create a temporary directory for testing
-	tempDir, err := os.MkdirTemp("", "settings_test")
-	require.NoError(t, err)
-	defer os.RemoveAll(tempDir)
-
-	// Set environment variable to override config path
-	originalHome := os.Getenv("HOME")
-	defer os.Setenv("HOME", originalHome)
-	os.Setenv("HOME", tempDir)
-
-	// Create settings to save
-	settings := DefaultSettings()
-
-	// Test saving settings (should create directories)
-	err = SaveSettings(settings)
-	require.NoError(t, err)
-
-	// Verify file was created
-	configPath, err := getConfigPath()
-	require.NoError(t, err)
-	assert.FileExists(t, configPath)
-}
-
 // Benchmark tests
 func BenchmarkLoadSettings(b *testing.B) {
-	// Create a temporary directory for testing
-	tempDir, err := os.MkdirTemp("", "benchmark_settings_test")
-	require.NoError(b, err)
-	defer os.RemoveAll(tempDir)
+	tempDir := b.TempDir()
+	b.Setenv("HOME", tempDir)
+	b.Setenv("XDG_CONFIG_HOME", filepath.Join(tempDir, ".config"))
 
-	// Set environment variable to override config path
-	originalHome := os.Getenv("HOME")
-	defer os.Setenv("HOME", originalHome)
-	os.Setenv("HOME", tempDir)
-
-	// Create initial settings
-	initialSettings := DefaultSettings()
-	err = SaveSettings(initialSettings)
-	require.NoError(b, err)
+	require.NoError(b, SaveSettings(DefaultSettings()))
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -360,22 +346,14 @@ func BenchmarkLoadSettings(b *testing.B) {
 }
 
 func BenchmarkSaveSettings(b *testing.B) {
-	// Create a temporary directory for testing
-	tempDir, err := os.MkdirTemp("", "benchmark_settings_test")
-	require.NoError(b, err)
-	defer os.RemoveAll(tempDir)
+	tempDir := b.TempDir()
+	b.Setenv("HOME", tempDir)
+	b.Setenv("XDG_CONFIG_HOME", filepath.Join(tempDir, ".config"))
 
-	// Set environment variable to override config path
-	originalHome := os.Getenv("HOME")
-	defer os.Setenv("HOME", originalHome)
-	os.Setenv("HOME", tempDir)
-
-	// Create settings to save
 	settings := DefaultSettings()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		err := SaveSettings(settings)
-		require.NoError(b, err)
+		require.NoError(b, SaveSettings(settings))
 	}
 }

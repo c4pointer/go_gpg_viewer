@@ -2,31 +2,53 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"main.go/scanpassstore"
-	"main.go/settings"
+	"go_gpg_viewer/scanpassstore"
+	"go_gpg_viewer/settings"
 )
 
-func TestDecryptCommandConstruction(t *testing.T) {
-	filePath := "/tmp/test.gpg"
-	passphrase := ""
-	cmd := buildDecryptCommand(filePath, passphrase)
-	assert.Equal(t, []string{"gpg", "--batch", "--decrypt", filePath}, cmd.Args)
-
-	passphrase = "secret"
-	cmd = buildDecryptCommand(filePath, passphrase)
-	assert.Equal(t, []string{"gpg", "--batch", "--passphrase", "secret", "--decrypt", filePath}, cmd.Args)
+func TestSplitPasswordAndMetadata(t *testing.T) {
+	cases := []struct {
+		name      string
+		plaintext string
+		wantPw    string
+		wantMeta  string
+	}{
+		{"password only", "hunter2", "hunter2", ""},
+		{"password + metadata", "hunter2\nuser: alice", "hunter2", "user: alice"},
+		{"multi-line metadata", "hunter2\nuser: alice\nnotes: x", "hunter2", "user: alice\nnotes: x"},
+		{"empty input", "", "", ""},
+		{"only newline", "\n", "", ""},
+		{"trailing newline", "hunter2\n", "hunter2", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pw, meta := splitPasswordAndMetadata(c.plaintext)
+			assert.Equal(t, c.wantPw, pw)
+			assert.Equal(t, c.wantMeta, meta)
+		})
+	}
 }
 
-func buildDecryptCommand(filePath, passphrase string) *exec.Cmd {
-	if passphrase == "" {
-		return exec.Command("gpg", "--batch", "--decrypt", filePath)
+func TestJoinPasswordAndMetadataIsInverseOfSplit(t *testing.T) {
+	originals := []string{
+		"hunter2",
+		"hunter2\nuser: alice",
+		"hunter2\nuser: alice\nnotes: x",
 	}
-	return exec.Command("gpg", "--batch", "--passphrase", passphrase, "--decrypt", filePath)
+	for _, orig := range originals {
+		t.Run(orig, func(t *testing.T) {
+			pw, meta := splitPasswordAndMetadata(orig)
+			assert.Equal(t, orig, joinPasswordAndMetadata(pw, meta))
+		})
+	}
+}
+
+func TestJoinPasswordAndMetadataEmptyMeta(t *testing.T) {
+	assert.Equal(t, "hunter2", joinPasswordAndMetadata("hunter2", ""))
 }
 
 func TestScanPasswordStoreCLI(t *testing.T) {
