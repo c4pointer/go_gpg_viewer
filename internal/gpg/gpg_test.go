@@ -75,3 +75,17 @@ func TestParseRecipientKeyID(t *testing.T) {
 		})
 	}
 }
+
+func TestEncryptArgsPassesEveryRecipient(t *testing.T) {
+	assert.Equal(t, []string{
+		"--batch", "--yes",
+		"--recipient", "alice@example.com",
+		"--recipient", "0123456789ABCDEF",
+		"--output", "/store/rec.gpg", "--encrypt",
+	}, encryptArgs("/store/rec.gpg", []string{"alice@example.com", "0123456789ABCDEF"}))
+}
+
+func TestEncryptBytesRequiresRecipients(t *testing.T) {
+	_, err := EncryptBytes([]byte("x"), "/nonexistent/rec.gpg", nil)
+	assert.Error(t, err)
+}

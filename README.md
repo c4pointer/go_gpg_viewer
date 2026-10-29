@@ -334,6 +334,8 @@ gpg_viewer
    - Use the "Save Changes" button to encrypt and save modifications
    - Edit the "Name" field to rename a record or move it to another folder
      (e.g. `Work/github`); missing folders are created and emptied ones removed
+   - Records are encrypted for the recipients in the nearest `.gpg-id`, as with
+     `pass`; without one, the original file's key or the default recipient is used
    - The application automatically handles GPG passphrase prompts
 
 3. **Git Operations**

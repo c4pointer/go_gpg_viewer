@@ -51,20 +51,32 @@ func buildDecryptCmd(ctx context.Context, filePath, passphrase string) *exec.Cmd
 	return cmd
 }
 
-// EncryptBytes encrypts the given plaintext to outputFile for the given GPG
-// recipient. The plaintext is streamed to gpg through stdin so it never
+// EncryptBytes encrypts the given plaintext to outputFile for every given
+// GPG recipient. The plaintext is streamed to gpg through stdin so it never
 // touches disk in cleartext (no temp file). gpg writes the ciphertext
 // directly to outputFile, so only stderr is returned for diagnostics.
-func EncryptBytes(plaintext []byte, outputFile, recipient string) (stderr []byte, err error) {
+func EncryptBytes(plaintext []byte, outputFile string, recipients []string) (stderr []byte, err error) {
+	if len(recipients) == 0 {
+		return nil, fmt.Errorf("no GPG recipients given")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "gpg", "--batch", "--yes", "--recipient", recipient,
-		"--output", outputFile, "--encrypt")
+	cmd := exec.CommandContext(ctx, "gpg", encryptArgs(outputFile, recipients)...)
 	cmd.Stdin = bytes.NewReader(plaintext)
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
 	err = cmd.Run()
 	return stderrBuf.Bytes(), err
+}
+
+// encryptArgs builds the gpg argv for EncryptBytes. Exposed (unexported) for
+// testing.
+func encryptArgs(outputFile string, recipients []string) []string {
+	args := []string{"--batch", "--yes"}
+	for _, r := range recipients {
+		args = append(args, "--recipient", r)
+	}
+	return append(args, "--output", outputFile, "--encrypt")
 }
 
 // ListRecipientKeyID inspects an encrypted GPG file and returns the first

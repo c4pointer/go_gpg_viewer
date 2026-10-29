@@ -125,3 +125,35 @@ func TestPruneEmptyDirsNeverLeavesRoot(t *testing.T) {
 	assert.DirExists(t, root)
 	assert.DirExists(t, outside)
 }
+
+func TestRecipients(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".gpg-id"),
+		[]byte("# store key\nalice@example.com\n\n0123456789ABCDEF  # backup\n"), 0600))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "Team", "Deep"), 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "Team", ".gpg-id"), []byte("team@example.com\n"), 0600))
+
+	got, err := Recipients(root, filepath.Join(root, "gmail.gpg"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"alice@example.com", "0123456789ABCDEF"}, got)
+
+	got, err = Recipients(root, filepath.Join(root, "New", "Dir", "rec.gpg"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"alice@example.com", "0123456789ABCDEF"}, got, "directories that do not exist yet inherit from the root")
+
+	got, err = Recipients(root, filepath.Join(root, "Team", "Deep", "rec.gpg"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"team@example.com"}, got, "nearest .gpg-id wins")
+}
+
+func TestRecipientsWithoutGPGID(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "store")
+	require.NoError(t, os.MkdirAll(root, 0700))
+	// A .gpg-id above the store must not be picked up.
+	require.NoError(t, os.WriteFile(filepath.Join(parent, ".gpg-id"), []byte("outside@example.com\n"), 0600))
+
+	got, err := Recipients(root, filepath.Join(root, "Sub", "rec.gpg"))
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}

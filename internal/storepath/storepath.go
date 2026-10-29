@@ -97,3 +97,53 @@ func pruneEmptyDirs(root, dir string) {
 		dir = filepath.Dir(dir)
 	}
 }
+
+// gpgIDFile is the file pass(1) uses to list the recipients of a directory
+// and, unless overridden deeper down, of all its subdirectories.
+const gpgIDFile = ".gpg-id"
+
+// Recipients returns the GPG recipients for the record at recordPath, read
+// from the nearest .gpg-id file between the record's directory and root,
+// like pass(1) does. It returns nil when the store has no .gpg-id at all.
+func Recipients(root, recordPath string) ([]string, error) {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve password store path: %w", err)
+	}
+	dir, err := filepath.Abs(filepath.Dir(recordPath))
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve record path: %w", err)
+	}
+	for {
+		rel, err := filepath.Rel(absRoot, dir)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			return nil, nil
+		}
+		data, err := os.ReadFile(filepath.Join(dir, gpgIDFile))
+		if err == nil {
+			return parseGPGIDs(string(data)), nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("failed to read %s: %w", gpgIDFile, err)
+		}
+		if rel == "." {
+			return nil, nil
+		}
+		dir = filepath.Dir(dir)
+	}
+}
+
+// parseGPGIDs parses .gpg-id contents: one recipient per line, "#" starts a
+// comment, blank lines are ignored.
+func parseGPGIDs(contents string) []string {
+	var ids []string
+	for _, line := range strings.Split(contents, "\n") {
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		if line = strings.TrimSpace(line); line != "" {
+			ids = append(ids, line)
+		}
+	}
+	return ids
+}

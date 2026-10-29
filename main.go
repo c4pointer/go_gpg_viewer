@@ -252,8 +252,8 @@ func showRecordEditor(storeRoot, recordName, plaintext string, window fyne.Windo
 		// Edited plaintext is streamed straight to gpg over stdin — never
 		// staged to a temp file — so a crash here cannot leave plaintext
 		// on disk.
-		encryptAndFinish := func(recipient string) {
-			gpgStderr, err := encryptRecord([]byte(editedContent), newPath, recipient)
+		encryptAndFinish := func(recipients []string) {
+			gpgStderr, err := encryptRecord([]byte(editedContent), newPath, recipients)
 			if err != nil {
 				dialog.ShowError(fmt.Errorf("Failed to encrypt file: %v\n%s", err, gpgStderr), window)
 				return
@@ -273,14 +273,26 @@ func showRecordEditor(storeRoot, recordName, plaintext string, window fyne.Windo
 			finish("File saved successfully")
 		}
 
-		// Get the recipient from the original file
+		// Like pass(1), the nearest .gpg-id decides who the record is
+		// encrypted for.
+		recipients, err := storepath.Recipients(storeRoot, newPath)
+		if err != nil {
+			dialog.ShowError(err, window)
+			return
+		}
+		if len(recipients) > 0 {
+			encryptAndFinish(recipients)
+			return
+		}
+
+		// No .gpg-id: fall back to the key the original file was encrypted for
 		recipient, gpgStderr, err := gpg.ListRecipientKeyID(oldPath)
 		if err != nil {
 			dialog.ShowError(fmt.Errorf("Failed to get recipient info: %v\n%s", err, gpgStderr), window)
 			return
 		}
 		if recipient != "" {
-			encryptAndFinish(recipient)
+			encryptAndFinish([]string{recipient})
 			return
 		}
 
@@ -309,7 +321,7 @@ func showRecordEditor(storeRoot, recordName, plaintext string, window fyne.Windo
 					dialog.ShowError(errors.New("Recipient cannot be empty"), window)
 					return
 				}
-				encryptAndFinish(recipient)
+				encryptAndFinish([]string{recipient})
 			},
 			window,
 		)
@@ -328,11 +340,11 @@ func showRecordEditor(storeRoot, recordName, plaintext string, window fyne.Windo
 	editDialog.Show()
 }
 
-// encryptRecord encrypts plaintext for recipient into the record file dest.
+// encryptRecord encrypts plaintext for recipients into the record file dest.
 // gpg writes to a sibling temp file that is renamed over dest only on
 // success, so a failed or killed gpg can never truncate an existing record.
 // The temp file only ever holds ciphertext.
-func encryptRecord(plaintext []byte, dest, recipient string) (stderr []byte, err error) {
+func encryptRecord(plaintext []byte, dest string, recipients []string) (stderr []byte, err error) {
 	dir := filepath.Dir(dest)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create directory structure: %v", err)
@@ -345,7 +357,7 @@ func encryptRecord(plaintext []byte, dest, recipient string) (stderr []byte, err
 	tmp.Close()
 	defer os.Remove(tmpPath) // no-op once renamed
 
-	if stderr, err := gpg.EncryptBytes(plaintext, tmpPath, recipient); err != nil {
+	if stderr, err := gpg.EncryptBytes(plaintext, tmpPath, recipients); err != nil {
 		return stderr, err
 	}
 	if err := os.Rename(tmpPath, dest); err != nil {
@@ -386,7 +398,7 @@ func showNewRecordDialog(window fyne.Window, targetPath string, defaultRecipient
 	if defaultRecipient != "" {
 		recipientEntry.SetText(defaultRecipient)
 	} else {
-		recipientEntry.SetPlaceHolder("GPG recipient (email or key ID)")
+		recipientEntry.SetPlaceHolder("GPG recipient (empty: use .gpg-id)")
 	}
 
 	// Create form content
@@ -443,11 +455,6 @@ func showNewRecordDialog(window fyne.Window, targetPath string, defaultRecipient
 				return
 			}
 
-			if recipient == "" {
-				dialog.ShowError(errors.New("GPG recipient cannot be empty"), window)
-				return
-			}
-
 			// Create password content
 			var content strings.Builder
 			content.WriteString(password)
@@ -484,7 +491,8 @@ func showNewRecordDialog(window fyne.Window, targetPath string, defaultRecipient
 	newRecordDialog.Show()
 }
 
-// createNewPasswordFile creates a new GPG-encrypted password file
+// createNewPasswordFile creates a new GPG-encrypted password file. An empty
+// recipient means "use the nearest .gpg-id", as pass(1) would.
 func createNewPasswordFile(targetPath, recordName, content, recipient string) error {
 	filePath, err := storepath.ResolveRecord(targetPath, recordName)
 	if err != nil {
@@ -496,9 +504,19 @@ func createNewPasswordFile(targetPath, recordName, content, recipient string) er
 		return fmt.Errorf("password file '%s' already exists", recordName)
 	}
 
+	recipients := []string{recipient}
+	if recipient == "" {
+		if recipients, err = storepath.Recipients(targetPath, filePath); err != nil {
+			return err
+		}
+		if len(recipients) == 0 {
+			return errors.New("no GPG recipient: enter one or add a .gpg-id file to the password store")
+		}
+	}
+
 	// Encrypt the content directly through stdin so the plaintext is never
 	// written to disk in the clear.
-	gpgStderr, err := encryptRecord([]byte(content), filePath, recipient)
+	gpgStderr, err := encryptRecord([]byte(content), filePath, recipients)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt file: %v\n%s", err, gpgStderr)
 	}
