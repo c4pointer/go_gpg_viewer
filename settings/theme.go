@@ -1,9 +1,23 @@
 package settings
 
 import (
+	"image/color"
+
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/theme"
 )
+
+// fixedVariant wraps the default theme and pins its light/dark variant,
+// ignoring the OS preference. It is what the "light" and "dark" settings
+// select; "system" uses the default theme as-is.
+type fixedVariant struct {
+	fyne.Theme
+	variant fyne.ThemeVariant
+}
+
+func (t *fixedVariant) Color(name fyne.ThemeColorName, _ fyne.ThemeVariant) color.Color {
+	return t.Theme.Color(name, t.variant)
+}
 
 // ApplyTheme applies the specified theme to the application. The "system"
 // variant defers to Fyne's default theme, which in turn follows the OS
@@ -11,14 +25,12 @@ import (
 func ApplyTheme(app fyne.App, themeName string) {
 	switch themeName {
 	case "dark":
-		app.Settings().SetTheme(theme.DarkTheme())
+		app.Settings().SetTheme(&fixedVariant{theme.DefaultTheme(), theme.VariantDark})
 	case "light":
-		app.Settings().SetTheme(theme.LightTheme())
-	case "system":
-		app.Settings().SetTheme(theme.DefaultTheme())
+		app.Settings().SetTheme(&fixedVariant{theme.DefaultTheme(), theme.VariantLight})
 	default:
-		// Unknown setting — fall back to light to keep behaviour predictable.
-		app.Settings().SetTheme(theme.LightTheme())
+		// "system" and anything unknown: follow the OS preference.
+		app.Settings().SetTheme(theme.DefaultTheme())
 	}
 }
 
@@ -32,12 +44,10 @@ func GetAvailableThemes() []string {
 func GetThemeDisplayName(themeName string) string {
 	switch themeName {
 	case "dark":
-		return "Dark Theme"
+		return "Dark"
 	case "light":
-		return "Light Theme"
-	case "system":
-		return "System (Auto)"
+		return "Light"
 	default:
-		return "Light Theme"
+		return "Follow system"
 	}
 }

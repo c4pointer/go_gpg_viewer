@@ -11,8 +11,12 @@ INSTALL_DIR = /usr/local/bin
 DESKTOP_DIR = /usr/share/applications
 USER_DESKTOP_DIR = ~/.local/share/applications
 
-# Go build flags
+# Go build flags. On Linux the default build supports both Wayland and X11
+# and needs libwayland-dev + wayland-protocols; without them build with
+# `make TAGS=x11` (X11 only, also runs under XWayland).
+TAGS ?=
 LDFLAGS = -ldflags "-X main.Version=$(VERSION) -X main.BuildTime=$(shell date -u '+%Y-%m-%d_%H:%M:%S')"
+GOFLAGS = -tags "$(TAGS)"
 
 help: ## Show this help message
 	@echo "GPG Password Store Viewer - Makefile"
@@ -23,14 +27,14 @@ help: ## Show this help message
 build: ## Build the application
 	@echo "Building $(BINARY_NAME)..."
 	@mkdir -p $(BUILD_DIR)
-	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)
+	go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)
 	@chmod +x $(BUILD_DIR)/$(BINARY_NAME)
 	@echo "Build complete: $(BUILD_DIR)/$(BINARY_NAME)"
 
 build-debug: ## Build with debug information
 	@echo "Building $(BINARY_NAME) with debug info..."
 	@mkdir -p $(BUILD_DIR)
-	go build $(LDFLAGS) -tags debug -o $(BUILD_DIR)/$(BINARY_NAME)
+	go build -tags "debug $(TAGS)" $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)
 	@chmod +x $(BUILD_DIR)/$(BINARY_NAME)
 	@echo "Debug build complete: $(BUILD_DIR)/$(BINARY_NAME)"
 
@@ -88,23 +92,23 @@ clean: ## Clean build artifacts
 
 test:
 	@echo "Running tests..."
-	go test ./...
+	go test $(GOFLAGS) ./...
 
 test-verbose:
 	@echo "Running tests with verbose output..."
-	go test ./... -v
+	go test $(GOFLAGS) ./... -v
 
 test-coverage:
 	@echo "Running tests with coverage..."
-	go test ./... -cover
+	go test $(GOFLAGS) ./... -cover
 	@echo "Generating coverage report..."
-	go test ./... -coverprofile=coverage.out
+	go test $(GOFLAGS) ./... -coverprofile=coverage.out
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report generated: coverage.html"
 
 test-benchmark:
 	@echo "Running benchmarks..."
-	go test ./... -bench=. -benchmem
+	go test $(GOFLAGS) ./... -bench=. -benchmem
 
 lint: ## Run linter
 	@echo "Running linter..."
@@ -135,8 +139,8 @@ release: clean ## Build release binaries for multiple platforms
 	
 	# Linux
 	@echo "Building for Linux..."
-	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/release/$(BINARY_NAME)_linux_amd64
-	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o $(BUILD_DIR)/release/$(BINARY_NAME)_linux_arm64
+	GOOS=linux GOARCH=amd64 go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/release/$(BINARY_NAME)_linux_amd64
+	GOOS=linux GOARCH=arm64 go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/release/$(BINARY_NAME)_linux_arm64
 	
 	# Windows
 	@echo "Building for Windows..."
