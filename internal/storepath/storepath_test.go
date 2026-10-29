@@ -129,7 +129,7 @@ func TestPruneEmptyDirsNeverLeavesRoot(t *testing.T) {
 func TestRecipients(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(root, ".gpg-id"),
-		[]byte("# store key\nalice@example.com\n\n0123456789ABCDEF  # backup\n"), 0600))
+		[]byte("# store key\nalice@example.com\n--homedir /tmp/x\n\n0123456789ABCDEF  # backup\n"), 0600))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "Team", "Deep"), 0700))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "Team", ".gpg-id"), []byte("team@example.com\n"), 0600))
 

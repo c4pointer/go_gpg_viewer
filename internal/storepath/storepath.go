@@ -141,7 +141,10 @@ func parseGPGIDs(contents string) []string {
 		if i := strings.IndexByte(line, '#'); i >= 0 {
 			line = line[:i]
 		}
-		if line = strings.TrimSpace(line); line != "" {
+		line = strings.TrimSpace(line)
+		// A line starting with "-" would be read by gpg as an option, not
+		// a recipient, so it is ignored rather than passed through.
+		if line != "" && !strings.HasPrefix(line, "-") {
 			ids = append(ids, line)
 		}
 	}
